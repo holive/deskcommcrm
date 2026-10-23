@@ -45,6 +45,11 @@ Não descarte arquivos do upstream para contornar essa restrição.
 
 ## Limite desta automação
 
+Enquanto o fork não publica releases próprias, o CI de banco busca no upstream
+a release oficial mais recente e a tag histórica `v1.63.0` para conferir o kit de
+atualização. O checkout do fork também é conferido. Isso prepara os testes e não
+define quais imagens serão usadas na instalação.
+
 A infraestrutura ficará em um repositório privado separado. Este fluxo só atualiza
 o código do fork. Publicação de imagens próprias e promoção de uma versão para a
 infraestrutura são etapas separadas; sincronizar não equivale a fazer deploy.
