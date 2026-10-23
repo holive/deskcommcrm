@@ -2544,8 +2544,10 @@ preflight_instalacao() { # <X.Y.Z> <linux/platform> <WAHA_IMAGE efetiva>
     printf 'A instalação ARM64 exige versão numérica publicada (X.Y.Z): %s\n' "$versao" >&2
     return 1
   fi
-  [ -n "$waha" ] || { printf 'WAHA_IMAGE vazia\n' >&2; return 1; }
   preflight_imagens_crm "$versao" "$plataforma" || return 1
+  # WAHA só é obrigatório quando o profile correspondente foi ativado.
+  case ",${COMPOSE_PROFILES:-}," in *,waha,*) : ;; *) return 0 ;; esac
+  [ -n "$waha" ] || { printf 'WAHA_IMAGE vazia\n' >&2; return 1; }
   if ! manifesto_tem_plataforma "$waha" "$plataforma"; then
     printf 'WAHA_IMAGE %s não oferece %s; escolha uma imagem compatível, sem perder sessões/volumes.\n' "$waha" "$plataforma" >&2
     return 1
@@ -2568,6 +2570,8 @@ preflight_plataforma_atualizacao() { # <vX.Y.Z> <linux/platform>; usa WAHA_IMAGE
     waha='devlikeapro/waha:noweb-arm-2026.7.2'
   fi
   preflight_imagens_crm "$versao" "$plataforma" || return 1
+  # No deploy Meta-only, não há imagem WAHA para validar.
+  case ",${COMPOSE_PROFILES:-}," in *,waha,*) : ;; *) return 0 ;; esac
   if ! manifesto_tem_plataforma "$waha" "$plataforma"; then
     printf 'WAHA_IMAGE %s não oferece %s; não alterei a escolha do operador.\n' "$waha" "$plataforma" >&2
     return 1
