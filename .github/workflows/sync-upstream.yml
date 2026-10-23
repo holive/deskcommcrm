@@ -1,0 +1,85 @@
+name: Sincronizar upstream
+
+on:
+  schedule:
+    - cron: "23 12 * * 1" # Segunda-feira, 09:23 em Brasília.
+  workflow_dispatch:
+
+permissions:
+  # Atualiza somente a branch de sincronização e abre o PR.
+  # Aprovação e merge continuam manuais.
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'holive/deskcommcrm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Mesclar upstream e abrir PR
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          BASE_BRANCH: main
+          SYNC_BRANCH: sync/upstream
+          UPSTREAM_URL: https://github.com/melgarafael/DeskcommCRM.git
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin
+          git fetch --no-tags "$UPSTREAM_URL" refs/heads/main:refs/remotes/upstream/main
+
+          if git merge-base --is-ancestor upstream/main "origin/$BASE_BRANCH"; then
+            echo 'O fork já contém todos os commits do upstream.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$SYNC_BRANCH"; then
+            git switch --create "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+          else
+            git switch --create "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+          fi
+
+          # Mantém tanto customizações da main quanto resoluções feitas no PR.
+          for source in "origin/$BASE_BRANCH" upstream/main; do
+            if ! git merge --no-edit "$source"; then
+              git diff --name-only --diff-filter=U >> "$GITHUB_STEP_SUMMARY"
+              git merge --abort
+              echo "::error::Conflito com $source. Resolva por merge na branch $SYNC_BRANCH; nenhuma branch remota foi alterada."
+              exit 1
+            fi
+          done
+
+          # Push normal: nunca substitui a main nem reescreve a branch do PR.
+          git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+          pr_url=$(gh pr list --base "$BASE_BRANCH" --head "$SYNC_BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$pr_url" ]; then
+            body=$(mktemp)
+            cat > "$body" <<'BODY'
+          Incorpora os commits de `melgarafael/DeskcommCRM:main` por merge, preservando as customizações e o histórico do fork.
+
+          Antes de integrar:
+          - Aprovar a execução dos workflows, se o GitHub solicitar, e aguardar o CI.
+          - Conferir o comportamento Meta-only, inclusive ausência de dependência do WAHA.
+          - Revisar migrations e eventuais mudanças de configuração.
+          - Usar **Create a merge commit**. Não usar squash ou rebase neste PR.
+
+          Este PR não atualiza a infraestrutura nem faz deploy.
+          BODY
+            pr_url=$(gh pr create --base "$BASE_BRANCH" --head "$SYNC_BRANCH" \
+              --title 'chore: sincronizar com o upstream' --body-file "$body")
+            rm -f "$body"
+          fi
+          echo "PR de sincronização: $pr_url" >> "$GITHUB_STEP_SUMMARY"

@@ -4,6 +4,8 @@ Esta branch desliga o WAHA por padrão, **não** desativa o WhatsApp no Deskcomm
 
 ## Mudanças
 
+Manutenção do fork: [fluxo de sincronização com upstream](SYNC_UPSTREAM.md).
+
 - `waha` pertence ao profile opt-in `waha`; `app` não depende mais dele no Compose.
 - O `worker` recebe `WAHA_API_BASE_URL` vazia quando não configurada.
 - Variáveis WAHA não bloqueiam mais o início em produção.
