@@ -83,6 +83,9 @@ const job = {
 const deps = {
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   llmCfg: {}, crmCfg: {}, knobs: {},
+  // O cenário mede a precedência do opt-out, dentro da janela de atendimento;
+  // a hora real da máquina não pode desviar o turno para o reagendamento.
+  clock: () => new Date('2026-10-06T15:00:00Z'),
   channel: () => ({ send: vi.fn(async () => ({ kind: 'sent' })) }),
 } as unknown as InboundTurnDeps;
 const assistido = {

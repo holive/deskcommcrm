@@ -306,3 +306,35 @@ describe("wave 2 — human-cases repositório", () => {
     expect(rowAfter.rows[0].status).toBe("awaiting_human");
   });
 });
+
+
+describe("STOP não reabre uma demanda já concluída", () => {
+  it("chamada direta recusa caso novo e fallback sem alterar o caso resolvido", async () => {
+    const contato = "cccccccc-0000-4000-8000-000000000091";
+    const conversa = "cccccccc-0000-4000-8000-000000000092";
+    const pergunta = "Qual é o endereço do showroom?";
+    await seedExtraConversation(conversa, contato, ORG_A, SESSION_A);
+    const escopo = ids(ORG_A, conversa);
+    const original = await openCase(pool, escopo, {
+      title: "Confirmar visita", summary: "Visita ao showroom às 10h.", blocker: "Equipe precisa confirmar.",
+    });
+    if (!original.ok) throw new Error("setup falhou");
+    await resolveCaseFromHuman(pool, ORG_A, original.caseId, ACTOR_A, "Horário indisponível; assunto concluído.");
+    // Simula STOP confirmado depois da leitura do contexto, antes da tool.
+    await pool.query("update contacts set is_blocked = true where organization_id = $1 and id = $2", [ORG_A, contato]);
+    const antes = await pool.query("select * from agent_cases where organization_id = $1 and id = $2", [ORG_A, original.caseId]);
+    const eventosAntes = await pool.query("select id from agent_case_events where organization_id = $1 and case_id = $2 order by id", [ORG_A, original.caseId]);
+    for (const source of ["agent", "guardrail_autofallback"] as const) {
+      const resultado = await openCase(pool, escopo, {
+        title: "Confirmar disponibilidade do showroom", summary: pergunta,
+        blocker: "Pedido antigo no histórico.", source,
+      });
+      expect(resultado).toMatchObject({ ok: false, error: { code: "contact_blocked" } });
+    }
+    expect((await pool.query("select * from agent_cases where organization_id = $1 and conversation_id = $2", [ORG_A, conversa])).rows).toEqual(antes.rows);
+    expect((await pool.query("select id from agent_case_events where organization_id = $1 and case_id = $2 order by id", [ORG_A, original.caseId])).rows).toEqual(eventosAntes.rows);
+    // Desbloqueio explícito recupera a operação para um pedido novo legítimo.
+    await pool.query("update contacts set is_blocked = false where organization_id = $1 and id = $2", [ORG_A, contato]);
+    expect(await openCase(pool, escopo, { title: "Pedido novo", summary: pergunta, blocker: "Confirmar novo pedido." })).toMatchObject({ ok: true });
+  });
+});
