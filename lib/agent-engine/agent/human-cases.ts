@@ -26,7 +26,7 @@ import { TIPOS_DE_CASO, type TipoDeCaso } from "@/lib/ai/case-copy";
  * draft-reply.ts). O espelho de estágio (mirrorLeadStageToCrm) já resolve o
  * negócio do contato para MOVER o card, mas nada aqui lê esse id, então
  * `agent_cases.lead_id` fica NULL sempre — o caso ancora em `conversation_id`
- * (CaseIds não carrega o contact_id: nada aqui o lê).
+ * (CaseIds não carrega o contact_id: a elegibilidade lê o contato pela conversa).
  */
 import { z } from 'zod';
 import type pg from 'pg';
@@ -229,7 +229,9 @@ export function recusaDeCasoAberto(): OpenCaseResult {
  * Abre o caso: INSERT agent_cases(status='awaiting_human') + INSERT
  * agent_case_events(kind='opened') em UM statement atômico. A guarda de dedup
  * (não abrir 2º caso pra mesma conversa) mora no `where not exists` do próprio
- * INSERT — sem essa condição haveria corrida entre a checagem e a escrita;
+ * INSERT. O mesmo statement exige contato não bloqueado na organização, para
+ * um STOP confirmado enquanto o modelo pensava também impedir caso novo.
+ * Sem essas condições haveria corrida entre a checagem e a escrita;
  * aqui checagem e escrita são a MESMA operação. Essa atomicidade check-and-write
  * vale DENTRO do statement; a garantia de não-duplicação entre transações
  * CONCORRENTES vem da serialização per-contact do job_queue
@@ -251,22 +253,30 @@ export async function openCase(
   const source = input.source ?? 'agent';
   const actorKind = source === 'agent' ? 'agent' : 'system';
 
-  const { rows } = await db.query<{ case_id: string }>(
-    `with new_case as (
+  const { rows } = await db.query<{ case_id: string | null; contact_blocked: boolean | null }>(
+    `with contact_state as (
+       select ct.is_blocked
+         from conversations cv
+         join contacts ct on ct.id = cv.contact_id and ct.organization_id = $1
+        where cv.organization_id = $1 and cv.id = $2
+     ), new_case as (
        insert into agent_cases
          (organization_id, conversation_id, agent_id, title, summary, blocker, context_snapshot, source, kind)
        select $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $11
-        where not exists (
+        where exists (select 1 from contact_state where is_blocked = false)
+          and not exists (
           select 1 from agent_cases
            where organization_id = $1 and conversation_id = $2
              and status = any($9::text[])
         )
        returning id
+     ), opened_event as (
+       insert into agent_case_events (organization_id, case_id, kind, actor_kind)
+       select $1, id, 'opened', $10 from new_case
+       returning case_id
      )
-     insert into agent_case_events (organization_id, case_id, kind, actor_kind)
-     select $1, id, 'opened', $10
-       from new_case
-     returning case_id`,
+     select (select case_id from opened_event) as case_id,
+            (select is_blocked from contact_state) as contact_blocked`,
     [
       ids.tenantId,
       ids.conversationId,
@@ -284,8 +294,19 @@ export async function openCase(
     ],
   );
 
+  // Revalida na escrita: o STOP pode ter chegado enquanto o modelo pensava.
+  // A guarda vale também para o fallback automático e para a chamada direta,
+  // sem depender do contexto antigo carregado pelo turno.
+  if (rows[0]?.contact_blocked === true) {
+    return { ok: false, error: { code: 'contact_blocked',
+      message: 'Contato bloqueado (opt-out): nenhum caso foi aberto e ninguém foi acionado.' } };
+  }
+  if (rows[0]?.contact_blocked === null) {
+    return { ok: false, error: { code: 'conversation_unavailable',
+      message: 'Conversa indisponível nesta organização: nenhum caso foi aberto.' } };
+  }
   const caseId = rows[0]?.case_id;
-  if (caseId === undefined) {
+  if (caseId == null) {
     // A recusa é uma INSTRUÇÃO (não só um erro): é o texto que o modelo lê no
     // resultado da tool, e é ele que impede a promessa de que a equipe foi
     // acionada quando ninguém foi avisado (#3097).

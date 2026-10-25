@@ -2767,6 +2767,27 @@ async function executarTurnoDoAgente(
   // STOP lido no turno (fonte: CRM via get_lead_context) — combinado com o cache
   // durável leads.is_opted_out no gate 1 da cadeia (F2-13).
   const optedOutThisTurn = openingContext.context.contact.is_blocked;
+  // STOP encerra a operação automática, não apenas a tentativa de envio. Se o
+  // modelo ainda roda, ele pode abrir outro caso sobre um pedido já resolvido
+  // mesmo quando o stopGate barra todas as mensagens. Reusa a disposição
+  // terminal do sink: cancela o job e os follow-ups sem retry nem incidente.
+  if (!preview && optedOutThisTurn) {
+    await applySendOutcome(
+      pool,
+      { kind: 'blocked', idempotencyKey: liveJob().id },
+      {
+        jobId: liveJob().id,
+        workerId: ctx.workerId,
+        tenantId,
+        leadId,
+        jobClaim: claimOfJob(liveJob()),
+      },
+      { queuedRetryDelayMs: deps.knobs.queuedRetryDelayMs },
+    );
+    if (input.tracoDoTurno) input.tracoDoTurno.desfecho.abortReason = 'contact_blocked';
+    runLog.info('contato bloqueado — turno cancelado antes do modelo e das ferramentas');
+    throw new JobSettledError('contato bloqueado (opt-out) — operação automática cancelada');
+  }
   // LGPD (F4-09): base legal/anonimização do CRM lidas na abertura do turno (fonte confiável,
   // regra dura nº 1) — o gate LGPD da cadeia veta anonimizado (sempre) e 1º toque de prospecção
   // sem base legal. Resposta a inbound (isProspecting=false) não dispara o veto de base legal.
@@ -3190,17 +3211,6 @@ async function executarTurnoDoAgente(
       notes_count: noteIdRows.length,
       note_ids: noteIdRows.map((r) => r.id),
     });
-  }
-
-  // F4-07: STOP no CRM detectado no turno → cancela TODOS os follow-ups agendados do lead
-  // (não só o job atual). O stopGate já veta ESTE turno; o cancel garante que nenhum cron
-  // futuro dispare em vão (opt-out irrevogável, regra dura nº 2). Idempotente — reusa o
-  // cancel compartilhado com o handoff (F4-06).
-  if (!preview && optedOutThisTurn) {
-    const canceled = await cancelPendingCronsForLead(pool, tenantId, leadId);
-    if (canceled > 0) {
-      runLog.info('opt-out detectado no turno — follow-ups agendados cancelados', { canceled });
-    }
   }
 
   // Estado do RUN — vive só neste closure (isolamento por construção, acc 3).
