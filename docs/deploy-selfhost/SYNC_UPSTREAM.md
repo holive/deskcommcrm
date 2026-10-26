@@ -47,8 +47,11 @@ e [correções de segurança](https://docs.github.com/en/code-security/how-tos/s
 ## Revisão e integração
 
 1. Liberar os workflows, se solicitado, e conferir o CI do PR.
-2. Verificar que o app e os workers continuam funcionando sem WAHA. Merge sem
-   conflito não garante que o comportamento Meta-only foi preservado.
+2. Revisar separadamente o patch de runtime que permite operar sem WAHA e a
+   configuração de deploy. O Compose de produção e o kit de instalação seguem o
+   upstream, cujo Compose inicia WAHA e cujo kit usa imagens upstream. Isso não
+   representa a topologia Meta-only mantida pela infraestrutura privada, que tem
+   Compose e processo de promoção próprios.
 3. Revisar migrations e mudanças de configuração antes de qualquer implantação.
 4. Integrar usando **Create a merge commit**, preservando os commits originais.
    Não usar squash ou rebase nos PRs de sincronização: isso perde a ancestralidade
@@ -57,8 +60,10 @@ e [correções de segurança](https://docs.github.com/en/code-security/how-tos/s
 Se houver conflito, o job falha, lista os arquivos no resumo e deixa as branches
 remotas intactas. Para resolver, parta da `sync/upstream` remota se ela já existir
 (ou da `origin/main` caso contrário), mescle `origin/main` e a `main` atualizada do
-upstream, resolva os conflitos preservando o patch Meta-only e faça push normal.
-Execute o workflow novamente para abrir ou reutilizar o PR.
+upstream, resolva os conflitos preservando as alterações de runtime Meta-only e
+faça push normal. Mantenha os arquivos de Compose e o kit alinhados ao upstream;
+eles não definem a infraestrutura privada. Execute o workflow novamente para
+abrir ou reutilizar o PR.
 
 Se o GitHub recusar o push porque a atualização altera `.github/workflows/`,
 faça esse merge e push pela sua sessão Git autenticada, na mesma branch, e rode
@@ -69,11 +74,21 @@ Não descarte arquivos do upstream para contornar essa restrição.
 
 ## Limite desta automação
 
+A automação `release.yml` do projeto original depende de um GitHub App de release.
+Ela fica desativada nas configurações de Actions deste fork, que não corta versões
+próprias; o arquivo acompanha o upstream. A publicação de imagens pela `main` usa
+o workflow de imagens e continua independente dessa rotina.
+
 Enquanto o fork não publica releases próprias, o CI de banco busca no upstream
 a release oficial mais recente e a tag histórica `v1.63.0` para conferir o kit de
 atualização. O checkout do fork também é conferido. Isso prepara os testes e não
 define quais imagens serão usadas na instalação.
 
-A infraestrutura é mantida em um repositório privado separado. Este fluxo só atualiza
-o código do fork. Publicação de imagens próprias e promoção de uma versão para a
-infraestrutura são etapas separadas; sincronizar não equivale a fazer deploy.
+A infraestrutura é mantida em um repositório privado separado, com Compose próprio
+e seis serviços Meta-only (`app`, `worker`, `scheduler`, `redis`, `srh` e
+`cloudflared`), sem WAHA nem Caddy. Este fluxo só atualiza o código do fork. O
+Compose de produção e o kit deste repositório seguem o upstream: o Compose inclui
+WAHA por padrão e o kit usa imagens upstream. Publicar imagens do fork de uma
+mesma revisão para `app`, `worker` e `scheduler`, e promover essa revisão na
+infraestrutura, são etapas separadas. Sincronizar não equivale a publicar nem a
+implantar.

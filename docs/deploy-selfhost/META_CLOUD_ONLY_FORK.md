@@ -1,43 +1,23 @@
-# Meta Cloud API-only — deploy experimental
+# Meta Cloud API no fork
 
-Esta branch desliga o WAHA por padrão, **não** desativa o WhatsApp no DeskcommCRM. Use a conexão oficial **Meta Cloud API** no onboarding.
-
-## Mudanças
+Este fork mantém alterações no runtime para operar com WAHA desativado: a validação de ambiente e o endpoint `/api/v1/health` reconhecem WAHA desativado. Isso permite usar a conexão oficial **Meta Cloud API** no onboarding. Não desativa o suporte a WhatsApp.
 
 Manutenção do fork: [fluxo de sincronização com upstream](SYNC_UPSTREAM.md).
 
-- `waha` pertence ao profile opt-in `waha`; `app` não depende mais dele no Compose.
-- O `worker` recebe `WAHA_API_BASE_URL` vazia quando não configurada.
-- Variáveis WAHA não bloqueiam mais o início em produção.
-- `/api/v1/health` informa `waha: disabled`, sem tratar ausência intencional como erro.
-- Preflight ARM64 ignora a imagem WAHA quando o profile está inativo.
+## Compose e kit do upstream
 
-## Antes de usar
+`docker-compose.prod.yml` e o kit em `hostgator-setup-kit/` seguem o upstream. O Compose padrão inicia WAHA; o kit padrão usa imagens e tags do upstream. Não use o Compose padrão como prova de uma topologia Meta-only e não implante por esse kit como se ele instalasse a infraestrutura deste fork.
 
-**Não rode o instalador do upstream como se esta branch fosse uma release oficial do fork.** O kit padrão ainda aponta para imagens `ghcr.io/melgarafael/*`, e o código TypeScript modificado só é executado se a imagem do **fork** for construída e publicada.
+O runtime alterado só entra em execução com imagens do fork. Para cada revisão implantada, publique e use imagens correspondentes de `app`, `worker` e `scheduler`, todas construídas da mesma revisão. Não misture imagens do upstream com código do fork.
 
-Para um ambiente de teste, use um `.env` com a configuração de Supabase externo e segredos, e defina as imagens do fork explicitamente. Em uma máquina de build com Docker Compose:
+## Infraestrutura do fork
 
-```bash
-# Não colocar 'waha' em COMPOSE_PROFILES.
-docker compose -f docker-compose.prod.yml --env-file .env config --services
-# Não deve listar "waha".
-docker compose -f docker-compose.prod.yml --env-file .env config --quiet
+A infraestrutura de deploy tem Compose próprio, separado deste repositório. Sua topologia Meta-only usa seis serviços: `app`, `worker`, `scheduler`, `redis`, `srh` e `cloudflared`; não inclui WAHA nem Caddy. A promoção de imagens e a atualização dessa infraestrutura são operações separadas da sincronização de código.
 
-# Build de teste em máquina com recursos suficientes (não na VPS de 4 GB sem swap):
-docker compose -f docker-compose.prod.yml -f docker-compose.build.yml --env-file .env build app worker scheduler
-```
+## Escopo das alterações
 
-No deploy, alinhe `APP_IMAGE`, `WORKER_IMAGE` e `SCHEDULER_IMAGE` à mesma revisão do fork. O `up` sem override de build usará as imagens definidas no `.env`. Não misture imagem de app do upstream com código desta branch.
+- O runtime aceita WAHA desativado e informa `waha: disabled` em `/api/v1/health` nesse estado.
+- Os arquivos do Compose de produção e do kit de instalação/atualização acompanham o upstream, incluindo o WAHA padrão.
+- As alterações de runtime não mudam a topologia nem o procedimento de deploy da infraestrutura privada.
 
-## Checklist de validação
-
-1. `bash -n hostgator-setup-kit/install.sh hostgator-setup-kit/_common.sh`.
-2. `docker compose ... config --services` não inclui `waha`.
-3. Next e worker iniciam sem WAHA, com `/api/v1/health` não degradado por ele.
-4. Conectar canal `meta_cloud`, receber webhook assinado, testar mensagem recebida e enviada, mídia, template e ack.
-5. Validar scripts de upgrade/rollback e watchdogs antes de produção.
-
-## Limitações conhecidas
-
-O instalador e o atualizador do upstream ainda utilizam registry e tags do upstream. Esta alteração é **preparatória**: não foi feita uma instalação E2E nem prova de processamento Meta-only. As referências WAHA no código permanecem para compatibilidade, sem container iniciado por padrão.
+Não trate a descrição desta topologia como evidência de deploy ou de validação operacional; confira o processo de release e implantação antes de promover uma revisão.

@@ -3,8 +3,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/hostgator-setup-kit/_common.sh"
 IMG_NS=ghcr.io/exemplo
-# Os casos de compatibilidade WAHA exercitam o perfil opt-in.
-export COMPOSE_PROFILES=waha
 
 ghcr_status() {
   if [ "${TEST_STATUS:-200}" != 200 ]; then printf '%s' "$TEST_STATUS"; return; fi
@@ -36,10 +34,6 @@ unset TEST_BAD_IMAGE
 WAHA_IMAGE=registry.exemplo/plus:licenciada
 TEST_BAD_WAHA="$WAHA_IMAGE"
 recusa 'WAHA customizada incompatível é recusada' WAHA preflight_instalacao 1.66.1 linux/arm64 "$WAHA_IMAGE"
-COMPOSE_PROFILES= ok 'Meta-only ignora uma imagem WAHA incompatível' preflight_instalacao 1.66.1 linux/arm64 "$WAHA_IMAGE"
-COMPOSE_PROFILES= ok 'Meta-only instala sem imagem WAHA' preflight_instalacao 1.66.1 linux/arm64 ''
-COMPOSE_PROFILES=outro ok 'outro perfil não ativa WAHA' preflight_instalacao 1.66.1 linux/arm64 "$WAHA_IMAGE"
-recusa 'perfil WAHA ativo exige imagem' WAHA_IMAGE preflight_instalacao 1.66.1 linux/arm64 ''
 test "$WAHA_IMAGE" = registry.exemplo/plus:licenciada || { echo '✗ WAHA customizada foi trocada'; exit 1; }
 unset TEST_BAD_WAHA
 ok 'WAHA Plus compatível é preservada' preflight_instalacao 1.66.1 linux/arm64 "$WAHA_IMAGE"

@@ -1,5 +1,5 @@
 # DeskcommCRM — stack de produção self-host (VPS HostGator).
-# Sobe: caddy (HTTPS) → app (Next standalone) + redis+srh + scheduler. WAHA: profile opcional.
+# Sobe: caddy (HTTPS) → app (Next standalone) + waha + redis+srh + scheduler.
 # Só o Caddy publica portas (80/443). Todo o resto vive na rede interna.
 #
 #   docker compose -f docker-compose.prod.yml --env-file .env up -d
@@ -66,6 +66,8 @@ services:
       EVENT_LOG_WORKER_DRAINS: ${EVENT_LOG_WORKER_DRAINS:-true}
     depends_on:
       srh:
+        condition: service_started
+      waha:
         condition: service_started
     healthcheck:
       # Probe TCP puro (node existe na imagem; curl/nc não). NÃO usar /api/v1/health:
@@ -169,8 +171,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Modo Meta-only: por padrão, nenhum serviço WAHA é exigido.
-      WAHA_API_BASE_URL: ${WAHA_API_BASE_URL:-}
+      # dentro da rede do compose, o WAHA é o serviço 'waha' na porta interna 3000
+      WAHA_API_BASE_URL: http://waha:3000
       SUPABASE_DB_ADMIN_URL: ""
     networks:
       - internal
@@ -181,7 +183,6 @@ services:
       retries: 3
       start_period: 20s
   waha:
-    profiles: ["waha"]  # opt-in: COMPOSE_PROFILES=waha
     # Teto de memória — 893 MiB de pico MEDIDO nesta VPS.
     #
     # Sem ele o contêiner é ilimitado, e numa VPS de 3,8 GB isso não é teoria:
