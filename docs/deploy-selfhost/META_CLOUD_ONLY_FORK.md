@@ -1,6 +1,6 @@
 # Meta Cloud API no fork
 
-Este fork mantém alterações no runtime para que a ausência de WAHA seja opcional: a validação de ambiente e o endpoint `/api/v1/health` reconhecem WAHA desativado. Isso permite usar a conexão oficial **Meta Cloud API** no onboarding. Não desativa o suporte a WhatsApp.
+Este fork mantém alterações no runtime para operar com WAHA desativado: a validação de ambiente e o endpoint `/api/v1/health` reconhecem WAHA desativado. Isso permite usar a conexão oficial **Meta Cloud API** no onboarding. Não desativa o suporte a WhatsApp.
 
 Manutenção do fork: [fluxo de sincronização com upstream](SYNC_UPSTREAM.md).
 

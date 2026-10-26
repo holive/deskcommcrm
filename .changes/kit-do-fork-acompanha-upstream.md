@@ -1,0 +1,6 @@
+---
+impacto: exige_acao
+secao: alterado
+titulo: O Compose e o kit do fork voltam a acompanhar o upstream
+---
+O Compose de produção e o kit de instalação deste fork voltam a seguir o upstream, com WAHA no Compose padrão. Quem usava esses arquivos para uma instalação Meta-only precisa manter a topologia em um Compose próprio antes de atualizar. O runtime continua aceitando WAHA desativado; a infraestrutura privada Meta-only tem seu próprio Compose e não muda com esta limpeza. App, worker e scheduler devem usar imagens do fork construídas da mesma revisão.
