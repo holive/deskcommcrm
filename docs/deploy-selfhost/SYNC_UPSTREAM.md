@@ -74,6 +74,11 @@ Não descarte arquivos do upstream para contornar essa restrição.
 
 ## Limite desta automação
 
+A automação `release.yml` do projeto original depende de um GitHub App de release.
+Ela fica desativada nas configurações de Actions deste fork, que não corta versões
+próprias; o arquivo acompanha o upstream. A publicação de imagens pela `main` usa
+o workflow de imagens e continua independente dessa rotina.
+
 Enquanto o fork não publica releases próprias, o CI de banco busca no upstream
 a release oficial mais recente e a tag histórica `v1.63.0` para conferir o kit de
 atualização. O checkout do fork também é conferido. Isso prepara os testes e não
