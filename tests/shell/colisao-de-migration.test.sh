@@ -124,6 +124,9 @@ GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH"
 unset FAKE_GH_PRS FAKE_GH_PRS_FECHADOS FAKE_GH_PAI FAKE_GH_SEM_NUMERO
+# O PR real do runner não pertence aos repositórios fictícios abaixo. Sem
+# isolar esta variável, o PR #7 do CI esconde o PR #7 do cenário de colisão.
+unset GITHUB_REF
 
 # ── um "repositório principal" mínimo, com duas migrations já aplicadas ──────────────
 principal="$TMP/principal"; mkdir -p "$principal/supabase/migrations"
