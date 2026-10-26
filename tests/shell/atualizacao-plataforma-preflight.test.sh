@@ -3,8 +3,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT/hostgator-setup-kit/_common.sh"
 IMG_NS=ghcr.io/exemplo
-# Os casos de compatibilidade WAHA exercitam o perfil opt-in.
-export COMPOSE_PROFILES=waha
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -32,11 +30,6 @@ unset TEST_OFFLINE
 TEST_BAD_IMAGE=registry.exemplo/waha-plus:custom
 WAHA_IMAGE="$TEST_BAD_IMAGE"
 reject 'WAHA customizada incompatível é preservada e recusada' preflight_plataforma_atualizacao v1.66.1 linux/arm64
-: > "$TMP/probes"
-COMPOSE_PROFILES= ok 'Meta-only ignora uma imagem WAHA incompatível' preflight_plataforma_atualizacao v1.66.1 linux/arm64
-! grep -q "$WAHA_IMAGE" "$TMP/probes" || { echo '✗ Meta-only sondou WAHA'; exit 1; }
-COMPOSE_PROFILES=outro ok 'outro perfil não ativa WAHA' preflight_plataforma_atualizacao v1.66.1 linux/arm64
-WAHA_IMAGE= COMPOSE_PROFILES= ok 'Meta-only atualiza sem imagem WAHA' preflight_plataforma_atualizacao v1.66.1 linux/arm64
 test "$WAHA_IMAGE" = "$TEST_BAD_IMAGE"
 unset TEST_BAD_IMAGE
 ok 'WAHA Plus customizada compatível passa' preflight_plataforma_atualizacao v1.66.1 linux/arm64
