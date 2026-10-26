@@ -1,8 +1,9 @@
 # Sincronização do fork
 
 O workflow [Sincronizar upstream](../../.github/workflows/sync-upstream.yml) verifica
-`melgarafael/DeskcommCRM:main` toda segunda-feira às 09:23 de Brasília. Também pode
-ser iniciado em **Actions → Sincronizar upstream → Run workflow**.
+`melgarafael/DeskcommCRM:main` todos os dias às 09:23 de Brasília. Também pode
+ser iniciado em **Actions → Sincronizar upstream → Run workflow**. O GitHub pode
+atrasar o disparo; o horário é uma programação, não uma garantia de pontualidade.
 
 Ele mescla o upstream em `sync/upstream` e abre um único PR para a `main` do fork.
 Execuções seguintes atualizam essa mesma branch por merge, preservando também as
@@ -19,6 +20,29 @@ aprova PR, faz merge na `main` ou implanta em produção.
   do CI. [Comportamento documentado pelo GitHub](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 - O GitHub pode desabilitar o agendamento após 60 dias sem atividade em um
   repositório público; nesse caso, reativar na página do workflow.
+
+## Alertas de segurança das dependências
+
+Em **Settings → Security → Advanced Security**, manter **Dependabot alerts** e
+**Dependabot security updates** habilitados. Os alertas acompanham vulnerabilidades
+conhecidas das dependências; quando houver uma correção compatível, o Dependabot
+pode abrir um PR de segurança. Isso é independente da busca diária do upstream e
+da agenda semanal de atualizações comuns em `dependabot.yml`.
+
+Conferir o estado real no fork:
+
+```bash
+gh api --silent repos/holive/deskcommcrm/vulnerability-alerts
+gh api repos/holive/deskcommcrm/automated-security-fixes
+```
+
+O primeiro comando termina com sucesso se os alertas estiverem habilitados; o
+segundo informa `enabled`. Os avisos aparecem em **Security → Dependabot** e a
+entrega de notificações segue as preferências da conta no GitHub. Priorizar os
+alertas de segurança na revisão; nenhum PR é aprovado ou instalado automaticamente.
+
+Fontes: [alertas](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-dependabot-alerts)
+e [correções de segurança](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/configure-security-updates).
 
 ## Revisão e integração
 
@@ -50,6 +74,6 @@ a release oficial mais recente e a tag histórica `v1.63.0` para conferir o kit 
 atualização. O checkout do fork também é conferido. Isso prepara os testes e não
 define quais imagens serão usadas na instalação.
 
-A infraestrutura ficará em um repositório privado separado. Este fluxo só atualiza
+A infraestrutura é mantida em um repositório privado separado. Este fluxo só atualiza
 o código do fork. Publicação de imagens próprias e promoção de uma versão para a
 infraestrutura são etapas separadas; sincronizar não equivale a fazer deploy.
