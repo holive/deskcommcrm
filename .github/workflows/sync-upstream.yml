@@ -2,7 +2,7 @@ name: Sincronizar upstream
 
 on:
   schedule:
-    - cron: "23 12 * * 1" # Segunda-feira, 09:23 em Brasília.
+    - cron: "23 12 * * *" # Todos os dias, 09:23 em Brasília.
   workflow_dispatch:
 
 permissions:
