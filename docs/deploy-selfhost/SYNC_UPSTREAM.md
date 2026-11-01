@@ -13,11 +13,15 @@ aprova PR, faz merge na `main` ou implanta em produção.
 ## Ativação
 
 - O workflow precisa estar na `main` e o GitHub Actions precisa estar habilitado no fork.
-- Em **Settings → Actions → General → Workflow permissions**, habilitar
-  **Allow GitHub Actions to create and approve pull requests**. O workflow pede só
-  `contents: write` e `pull-requests: write`; não precisa cadastrar token ou secret.
-- PRs criados com o `GITHUB_TOKEN` podem exigir **Approve workflows to run** antes
-  do CI. [Comportamento documentado pelo GitHub](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+- Em **Settings → Secrets and variables → Actions**, cadastrar o secret
+  `UPSTREAM_SYNC_TOKEN`. Preferir um token dedicado limitado a este fork, com
+  permissões de escrita em **Contents**, **Pull requests** e **Workflows**.
+  Um token clássico precisa de `repo` e `workflow`. O token é usado pelo checkout
+  para o push e pelo `gh` para abrir o PR; nunca colocá-lo no arquivo do workflow.
+- Sem esse secret, a execução falha antes do checkout com uma mensagem de configuração.
+  O `GITHUB_TOKEN` padrão não permite incorporar alterações em workflows, mesmo
+  com `contents: write`. A credencial dedicada também permite que o push e o PR
+  iniciem o CI normalmente; conferir eventuais aprovações exigidas pelo GitHub.
 - O GitHub pode desabilitar o agendamento após 60 dias sem atividade em um
   repositório público; nesse caso, reativar na página do workflow.
 
@@ -66,8 +70,8 @@ eles não definem a infraestrutura privada. Execute o workflow novamente para
 abrir ou reutilizar o PR.
 
 Se o GitHub recusar o push porque a atualização altera `.github/workflows/`,
-faça esse merge e push pela sua sessão Git autenticada, na mesma branch, e rode
-o workflow novamente. Alterar workflows exige a permissão específica
+confira se `UPSTREAM_SYNC_TOKEN` continua válido e tem a permissão de escrita
+em Workflows. Atualize o secret e rode o workflow novamente. Alterar workflows exige a permissão específica
 [Workflows](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app#choosing-permissions-for-git-access),
 que não pode ser acrescentada ao `GITHUB_TOKEN` pelo bloco `permissions`.
 Não descarte arquivos do upstream para contornar essa restrição.

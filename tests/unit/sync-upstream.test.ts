@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // Executa o próprio passo do workflow com repositórios Git reais, sem rede.
 // Só a API de PR é simulada; os merges, conflitos e pushes são reais.
 const workflow = readFileSync(".github/workflows/sync-upstream.yml", "utf8");
-const run = workflow.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
+const syncStep = workflow.split("      - name: Mesclar upstream e abrir PR\n")[1]!;
+const run = syncStep.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
 let root: string;
 let env: NodeJS.ProcessEnv;
 let sequence: number;
