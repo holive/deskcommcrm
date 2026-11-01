@@ -21,16 +21,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Verificar credencial de sincronização
+        env:
+          SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::Configure UPSTREAM_SYNC_TOKEN com acesso de escrita a Contents, Pull requests e Workflows deste repositório."
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           ref: main
+          # O token padrão não pode incorporar mudanças em .github/workflows/.
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           fetch-depth: 0
 
       - name: Mesclar upstream e abrir PR
         shell: bash
         env:
           GH_REPO: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           BASE_BRANCH: main
           SYNC_BRANCH: sync/upstream
           UPSTREAM_URL: https://github.com/melgarafael/DeskcommCRM.git
