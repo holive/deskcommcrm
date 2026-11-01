@@ -164,6 +164,54 @@ export const ESCOPO_DO_TEMA_DA_ORGANIZACAO = [
   ['[data-theme="dark"] body:has([data-tema-extensao])', "escuro"],
 ] as const;
 
+/**
+ * O escopo do tema da INSTALAÇÃO (#3790): a plataforma declara no `<html>`, e
+ * não no `<body>` da organização.
+ *
+ * O `:root:root` é a mesma especificidade reforçada do CSS personalizado
+ * (`lib/branding/css-personalizado.ts`): sem o par, o bloco depende da ordem
+ * dos `<link>` que o Next emite, e a paleta escolhida perderia para o
+ * `globals.css` em produção e ganharia em desenvolvimento.
+ *
+ * ⚠️ NÃO force especificidade contra a organização. O tema da empresa declara
+ * em `body:has([data-tema-extensao])` e o da instalação em `:root:root`; custom
+ * property herdada pega o ancestral MAIS PRÓXIMO, então na `/app` de quem tem
+ * tema próprio o `<body>` vence sem empate. Igualar as especificidades aqui é
+ * que criaria a disputa.
+ */
+export const ESCOPO_DA_INSTALACAO = [
+  [":root:root", "claro"],
+  [':root:root[data-theme="dark"]', "escuro"],
+] as const;
+
+/**
+ * As chaves que o tema da INSTALAÇÃO não pode tocar: a família
+ * `--color-accent*` (rampa e papéis `-fg`/`-soft`/`-hover`).
+ *
+ * A cor de ação da instalação vem da tela Marca (`platform_branding`), e a
+ * resolução dela é outra (`.env` + banco, contraste conferido). Deixar o tema
+ * escrever as duas fontes faria a cor de ação depender de qual escolha foi
+ * feita por último — o mesmo token com dois donos. Uma fonte para a cor
+ * (Marca), outra para as superfícies (tema).
+ */
+const PREFIXO_DA_COR_DE_ACAO = "--color-accent";
+
+/**
+ * O tema sem as chaves de cor de ação — o que o layout RAIZ aplica.
+ *
+ * Devolve os dois mapas filtrados; um tema que só declarava accent vira dois
+ * mapas vazios, e `cssDaExtensaoDeTema` devolve `{ css: null }` (nada a
+ * aplicar), que é o desfecho correto: não há superfície nenhuma para pintar.
+ */
+export function semAsChavesDaCorDeAcao(tema: TemaDeExtensao | null): TemaDeExtensao | null {
+  if (tema === null) return null;
+  const filtrar = (mapa: TokenMap): TokenMap =>
+    Object.fromEntries(
+      Object.entries(mapa).filter(([chave]) => !chave.startsWith(PREFIXO_DA_COR_DE_ACAO)),
+    ) as TokenMap;
+  return { ...tema, claro: filtrar(tema.claro), escuro: filtrar(tema.escuro) };
+}
+
 /** Sequências suspeitas no texto já montado — mesmo freio do `css.ts`. */
 const SEQUENCIAS_SUSPEITAS = ["<", ";}"] as const;
 

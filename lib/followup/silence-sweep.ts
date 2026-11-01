@@ -112,6 +112,17 @@ import { StaleServiceBoundaryError, parseServiceBoundary, assertCurrentServiceBo
  * fluxos de silêncio já publicados em outras instalações, que é dado alheio.
  * Quem quer a proteção liga no painel do gatilho.
  *
+ * ─── Resposta a mensagem automática não é lead frio (issue #3720) ──────────
+ *
+ * O outro lado da mesma moeda: aqui o silêncio é real (o cliente respondeu e
+ * parou), mas o MOTIVO da última mensagem dele muda o que ela significa. Quem
+ * responde "❤️" ao parabéns de aniversário não é um lead que esfriou — é
+ * alguém reagindo à única coisa que NÓS dissemos, e o fluxo tratava a reação
+ * como desinteresse: até 6 mensagens de venda em 7 dias para um cliente que só
+ * agradeceu. `resposta-a-automacao.ts` responde "a última mensagem recebida é
+ * resposta a uma automática nossa?" e o contato não é inscrito. Não é knob: a
+ * premissa do fluxo ("o lead não voltou") é simplesmente falsa.
+ *
  * agent_id: `decidirAgenteDoEnrollmentAutomatico` pina o agente publicado que
  * ARMA o pointer (menor uuid se >1). Grafo só de texto fixo nasce com
  * `agent_id` nulo. Grafo que pede IA sem agente é gate-out.
@@ -140,7 +151,8 @@ import {
   type NoDeGatilho,
 } from "./agent-followup-gate";
 import { emPausaDeReentrada, type BaseDaPausa, type FatosDaReentrada } from "./pausa-de-reentrada";
-import { contatosQueORetornoSegura } from "./retorno-segura-o-fluxo";
+import { contatosQueORetornoSegura, folgaDepoisDoRetorno } from "./retorno-segura-o-fluxo";
+import { contatosQueSoResponderamAAutomacao, type CandidatoDoSilencio } from "./resposta-a-automacao";
 
 /**
  * Status que ocupam a vaga do índice único `idx_followup_enrollments_one_live`
@@ -182,10 +194,10 @@ export interface SilenceSweepDb {
   /**
    * Contatos que o retorno SEGURA — o agendado vivo e o recém-executado (issue
    * #2907): quem tem um "te escrevo no dia 30" a caminho, ou acabou de receber a
-   * mensagem dele, não entra no fluxo de silêncio por cima. Ver
-   * `retorno-segura-o-fluxo.ts`.
+   * mensagem dele, não entra no fluxo de silêncio por cima. `folgaMs` é a do
+   * fluxo que pergunta (`folgaDepoisDoRetorno`). Ver `retorno-segura-o-fluxo.ts`.
    */
-  loadContatosComRetornoVivo(orgId: string): Promise<Set<string>>;
+  loadContatosComRetornoVivo(orgId: string, folgaMs: number): Promise<Set<string>>;
   /**
    * Dos `contactIds`, os que têm uma inscrição ENCERRADA (`completed`,
    * `cancelled`, `dead`) neste fluxo: quando terminou a mais recente e quando o
@@ -210,6 +222,19 @@ export interface SilenceSweepDb {
    * nossa, é o defeito que este knob existe para fechar.
    */
   loadContatosSemRespostaDaEquipe?(orgId: string, contactIds: string[]): Promise<Set<string>>;
+  /**
+   * Dos `contactIds`, os que só responderam a uma mensagem AUTOMÁTICA nossa —
+   * aniversário, lembrete, pesquisa, aviso ou campanha (issue #3720). Ver
+   * `resposta-a-automacao.ts` para a régua (a última mensagem que saiu antes da
+   * resposta dele foi `sent_via='automation'`, e há menos de 48 h).
+   *
+   * OPCIONAL pela mesma razão dos dois anteriores — e aqui a ausência do método
+   * lê como "ninguém", que é o comportamento de sempre. Diferente de
+   * `exige_resposta_da_equipe` (que falha FECHADA), esta guarda corta ruído de
+   * um fluxo que já existe, não abre um risco novo de spam: um adapter que não
+   * sabe responder não pode calar o follow-up de toda a organização.
+   */
+  loadContatosQueSoResponderamAAutomacao?(orgId: string, contactIds: string[]): Promise<Set<string>>;
   /**
    * Quantas inscrições deste fluxo cada contato JÁ TEVE (vivas e encerradas) —
    * a conta do teto de repetições. Contato ausente do mapa é zero.
@@ -277,6 +302,8 @@ export interface SilenceSweepSummary {
   skipped_human_owned: number;
   /** Silenciosos que a equipe ainda não respondeu (só conta com `exige_resposta_da_equipe`). */
   skipped_sem_resposta_da_equipe: number;
+  /** Silenciosos cuja última mensagem recebida é RESPOSTA a uma automática nossa (#3720). */
+  skipped_resposta_a_automacao: number;
   /** Silenciosos que já bateram o teto de repetições deste fluxo. */
   skipped_teto_de_repeticoes: number;
   /**
@@ -305,6 +332,7 @@ export async function runSilenceSweep(deps: SilenceSweepDeps): Promise<SilenceSw
     skipped_reentry_pause: 0,
     skipped_human_owned: 0,
     skipped_sem_resposta_da_equipe: 0,
+    skipped_resposta_a_automacao: 0,
     skipped_teto_de_repeticoes: 0,
     pointers_failed: 0,
   };
@@ -360,7 +388,10 @@ export async function runSilenceSweep(deps: SilenceSweepDeps): Promise<SilenceSw
         cutoffIso,
       );
       const nextEvalAt = clock().toISOString();
-      const comRetorno = await db.loadContatosComRetornoVivo(pointer.organization_id);
+      const comRetorno = await db.loadContatosComRetornoVivo(
+        pointer.organization_id,
+        folgaDepoisDoRetorno(pointer.threshold_minutes),
+      );
       const pausaMinutos = pointer.reentry_pause_minutes ?? 0;
       const encerramentos =
         pausaMinutos > 0
@@ -377,6 +408,12 @@ export async function runSilenceSweep(deps: SilenceSweepDeps): Promise<SilenceSw
         ? (await db.loadContatosSemRespostaDaEquipe?.(pointer.organization_id, contactIds)) ??
           new Set<string>(contactIds)
         : new Set<string>();
+      // #3720: "a resposta dele foi reação à minha automática" — o fluxo de
+      // silêncio não é a resposta certa para quem só agradeceu o parabéns.
+      // Ausência do método = comportamento de sempre (ver o contrato).
+      const soResponderamAAutomacao =
+        (await db.loadContatosQueSoResponderamAAutomacao?.(pointer.organization_id, contactIds)) ??
+        new Set<string>();
       // Teto de repetições: a pausa só ESPAÇA, e quem nunca responde segue
       // elegível para sempre. Falha FECHADA como a guarda de resposta — mapa
       // vazio aqui leria como "ninguém repetiu", que é o oposto do seguro.
@@ -401,6 +438,13 @@ export async function runSilenceSweep(deps: SilenceSweepDeps): Promise<SilenceSw
         // devia ter sido considerado". A dívida é NOSSA, não dele.
         if (semRespostaDaEquipe.has(contactId)) {
           summary.skipped_sem_resposta_da_equipe++;
+          continue;
+        }
+        // #3720, e antes do cooldown/teto pela mesma razão do anterior: não é
+        // throttle de tempo, é "este contato nunca devia ter sido considerado".
+        // A mensagem dele existe porque a NOSSA existiu primeiro.
+        if (soResponderamAAutomacao.has(contactId)) {
+          summary.skipped_resposta_a_automacao++;
           continue;
         }
         if (teto > 0 && (repeticoes.get(contactId) ?? 0) >= teto) {
@@ -680,6 +724,24 @@ export function createSupabaseSilenceSweepDb(admin: SupabaseClient): SilenceSwee
       return new Set(contactIds.filter((id) => semRespostaDaEquipe.has(`${orgId}:${id}`)));
     },
 
+    async loadContatosQueSoResponderamAAutomacao(orgId, contactIds) {
+      // Os dois fatos que a consulta precisa já estão aqui, colhidos na MESMA
+      // leitura que decidiu o silêncio (`loadSilentContactIds`): a conversa do
+      // inbound vencedor (`origins`) e o instante dele (`ultimaMensagem`).
+      const candidatos: CandidatoDoSilencio[] = [];
+      for (const contactId of contactIds) {
+        const boundary = origins.get(`${orgId}:${contactId}`);
+        const inboundAt = ultimaMensagem.get(`${orgId}:${contactId}`);
+        if (!boundary || inboundAt === undefined) continue;
+        candidatos.push({
+          contactId,
+          conversationId: boundary.conversation_id,
+          inboundAt: new Date(inboundAt).toISOString(),
+        });
+      }
+      return contatosQueSoResponderamAAutomacao(admin, orgId, candidatos);
+    },
+
     async loadContagemDeInscricoes(orgId, pointerId, contactIds) {
       // Conta TODAS as inscrições, de qualquer status: o teto é "quantas vezes
       // este fluxo já falou com esta pessoa", e uma tentativa cancelada no meio
@@ -726,8 +788,8 @@ export function createSupabaseSilenceSweepDb(admin: SupabaseClient): SilenceSwee
       return vivos;
     },
 
-    loadContatosComRetornoVivo(orgId) {
-      return contatosQueORetornoSegura(admin, orgId);
+    loadContatosComRetornoVivo(orgId, folgaMs) {
+      return contatosQueORetornoSegura(admin, orgId, folgaMs);
     },
 
     async loadTriggerNode(orgId, versionId) {
