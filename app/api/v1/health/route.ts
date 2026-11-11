@@ -38,6 +38,7 @@ import { env } from "@/lib/env";
 import { alvoDe, classificarFalhaDeAlcance, type FalhaDeAlcance } from "@/lib/net/alcance";
 import { validarConfigRedisRest } from "@/lib/redis-config";
 import { urlDoSupabaseNoServidor } from "@/lib/supabase/url-do-servidor";
+import { comIdDaRequisicao } from "@/lib/api/wrappers";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -430,7 +431,7 @@ export async function GET(req: NextRequest) {
 
   const httpStatus = status === "unhealthy" ? 503 : 200;
 
-  return NextResponse.json(
+  return comIdDaRequisicao(NextResponse.json(
     {
       data: {
         status,
@@ -449,5 +450,5 @@ export async function GET(req: NextRequest) {
       },
     },
     { status: httpStatus },
-  );
+  ), req);
 }
