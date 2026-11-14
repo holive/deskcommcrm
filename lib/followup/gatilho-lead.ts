@@ -24,6 +24,7 @@ import { serviceForEvent } from "@/lib/atendimento/origem";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { EventRow } from "@/lib/event-log/dispatcher";
+import { eventoDaIaNoAssistido } from "@/lib/automation/parada-no-assistido";
 import { ORIGEM_DA_PLANILHA } from "@/lib/leads/planilha";
 import { flowGraphSchema } from "./graph-schema";
 import { triggerConfigSchema } from "./api-schemas";
@@ -74,6 +75,8 @@ export interface GatilhoLeadSummary {
   enrolled: number;
   skipped_existing: number;
   skipped_stale_origin?: number;
+  /** A IA criou o negócio no modo assistido: a sequência espera alguém inscrever (doc 301 = B). */
+  parados_no_assistido?: number;
   sem_contato: number;
   vindos_de_planilha: number;
 }
@@ -127,9 +130,24 @@ export async function aplicaGatilhoDeLead(
     return summary;
   }
 
+  // Doc 301 = B: a mesma guarda do gatilho de etapa (`gatilho-etapa.ts`).
+  if (eventoDaIaNoAssistido(row)) {
+    summary.parados_no_assistido = armados.length;
+    return summary;
+  }
+
   for (const pointer of armados) {
     const noDeGatilho = await deps.db.carregaNoDeGatilho(row.organization_id, pointer.active_version_id);
     if (!noDeGatilho) continue;
+    // #3852: sem canal, e é deliberado. `lead.created` não carrega conversa (o
+    // payload é `{lead_id, pipeline_id, stage_id, contact_id, source}` —
+    // `supabase/baseline.sql:233`), e a conversa nasce/se resolve no INSERT
+    // (`serviceForEvent` → `fn_service_event_origin`, `supabase/baseline.sql:20571`/`20577`).
+    // Deduzir a sessão aqui escolheria um número possivelmente diferente do que
+    // o envio usa — e o turno resolve o agente PELO número
+    // (`agent-config.ts:430`, `v.channel_session_id = $2`), então seria persona
+    // de um número com envio por outro. Este produtor mantém a decisão por
+    // organização até o evento ter canal.
     const { agentId, barrado } = await decidirAgenteDoEnrollmentAutomatico(
       deps.gateDb,
       row.organization_id,

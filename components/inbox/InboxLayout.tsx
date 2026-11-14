@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, startTransition } fr
 import { useT } from "@/hooks/i18n/useT";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth, usePermission } from "@/hooks/auth/AuthProvider";
+import { useSectors } from "@/hooks/team/useSectors";
 import { roleAtLeast } from "@/lib/auth/types";
 import { useBulkConversations, type AcaoEmLote } from "@/hooks/inbox/useBulkConversations";
 import { useSelecaoEmLote } from "@/hooks/inbox/useSelecaoEmLote";
@@ -14,12 +15,15 @@ import { NumeroForaDoAr } from "@/components/inbox/NumeroForaDoAr";
 import { useClaimConversation } from "@/hooks/inbox/useClaimConversation";
 import { useCloseConversation } from "@/hooks/inbox/useCloseConversation";
 import { useMarkAsRead } from "@/hooks/inbox/useMarkAsRead";
+import { gravarFiltrosLembrados, lerFiltrosLembrados } from "@/lib/inbox/filtros-lembrados";
 import {
   useConversationsRealtime,
   type ConversationsFilters,
   type ConversationWithContact,
 } from "@/hooks/inbox/useConversationsRealtime";
 import { useConversation, isNotFound } from "@/hooks/inbox/useConversation";
+import { useParticipantesDaConversa } from "@/hooks/inbox/useParticipantesDaConversa";
+import { useParticipacoesRealtime } from "@/hooks/inbox/useParticipacoesRealtime";
 import { ConversationList } from "./ConversationList";
 import { BarraDeAcoesEmLote } from "./BarraDeAcoesEmLote";
 import { InboxFilters, type InboxFiltersValue, type InboxTab } from "./InboxFilters";
@@ -29,6 +33,7 @@ import { ConversationHeader } from "./ConversationHeader";
 import { BotaoIniciarConversa } from "./PainelIniciarConversa";
 import { RetentionNotice } from "./RetentionNotice";
 import { CRMSidePanel } from "./CRMSidePanel";
+import type { ModuloDaLateral } from "@/lib/inbox/modulos-da-lateral";
 import type { Message as ConversationMensagem } from "@/lib/types/messaging";
 import { InboxKeyboardShortcuts } from "./InboxKeyboardShortcuts";
 
@@ -267,15 +272,36 @@ interface InboxLayoutProps {
    * que evita o painel nascer aberto e pular para trilho depois da hidratação.
    */
   painelRecolhidoInicial?: boolean;
+  /**
+   * Quais módulos da lateral do contato aparecem, e em que ordem (#3008).
+   *
+   * Vem do SERVIDOR (`app/app/inbox/page.tsx` -> `carregarModulosDaLateral`),
+   * pela mesma razão do recolhido acima: a preferência é da pessoa, mora no
+   * metadata dela, e o primeiro paint já tem de sair com ela — ler no cliente
+   * faria a lateral nascer completa e "pular" para a escolhida.
+   */
+  modulosDaLateral?: ModuloDaLateral[];
 }
 
 export function InboxLayout({
   initialSelectedId = null,
   rascunho = null,
   painelRecolhidoInicial = false,
+  modulosDaLateral,
 }: InboxLayoutProps = {}) {
   const t = useT();
   const { activeOrg, user } = useAuth();
+  /**
+   * AS FILAS DA ORGANIZAÇÃO (#3876) — buscadas AQUI, e não na barra de filtros.
+   *
+   * Setores é módulo opcional (doc 213): desligado, a rota responderia 404 e o
+   * pedido nem sai (`enabled`). A página já tem o `activeOrg` e vive dentro do
+   * `QueryClientProvider`; a barra de filtros recebe a lista pronta e continua
+   * sem consultar o servidor, como sempre foi.
+   */
+  const setoresLigados = (activeOrg?.modulos_ligados ?? []).includes("setores");
+  const { data: filasDaOrganizacao } = useSectors(setoresLigados);
+  useParticipacoesRealtime(user.id, activeOrg?.orgId ?? null);
   const supportReadonly = user.support?.access_mode === "support_readonly";
   const orgId = activeOrg?.orgId ?? null;
 
@@ -296,14 +322,41 @@ export function InboxLayout({
   const tagNaUrl = searchParams.get("tag");
 
   // tab vive na URL (?filter=); os demais filtros são estado local de sessão —
-  // exceto a etiqueta, que entra UMA vez, na abertura, pela URL.
+  // exceto a etiqueta, que entra UMA vez, na abertura, pela URL, e o número e o
+  // "Não lidos", lembrados por organização (lib/inbox/filtros-lembrados).
   const [aux, setAux] = useState<Omit<InboxFiltersValue, "tab">>({
     search: "",
     onlyUnread: false,
     onlyGroups: false,
     ...(tagNaUrl ? { tag: tagNaUrl } : {}),
   });
-  const filterValue: InboxFiltersValue = { tab, ...aux };
+  // Lidos depois da hidratação: o servidor não enxerga o localStorage.
+  const [orgDosFiltros, setOrgDosFiltros] = useState<string | null>(null);
+  useEffect(() => {
+    if (!orgId) return;
+    const lembrados = lerFiltrosLembrados(armazenamentoDoNavegador(), orgId);
+    setAux((atual) => ({
+      ...atual,
+      channel_session_id: lembrados.channel_session_id,
+      onlyUnread: lembrados.onlyUnread ?? false,
+    }));
+    // O contexto acompanha o estado restaurado no PRÓXIMO render. Uma ref
+    // marcada aqui liberaria o efeito de gravação com os filtros anteriores.
+    setOrgDosFiltros(orgId);
+  }, [orgId]);
+  useEffect(() => {
+    if (!orgId || orgDosFiltros !== orgId) return;
+    gravarFiltrosLembrados(armazenamentoDoNavegador(), orgId, {
+      channel_session_id: aux.channel_session_id,
+      onlyUnread: aux.onlyUnread,
+    });
+  }, [orgId, orgDosFiltros, aux.channel_session_id, aux.onlyUnread]);
+  const filterValue: InboxFiltersValue = {
+    tab,
+    ...aux,
+    // Uma troca de organização não leva o número anterior nem à consulta.
+    ...(orgDosFiltros !== orgId ? { channel_session_id: undefined, onlyUnread: false } : {}),
+  };
   const setFilterValue = useCallback(
     (next: InboxFiltersValue) => {
       if (next.tab !== tab) {
@@ -422,6 +475,10 @@ export function InboxLayout({
         ? filterValue.search
         : undefined,
       channel_session_id: filterValue.channel_session_id,
+      // A FILA (#3876): o seletor da barra vira o mesmo `sector_id` que a rota
+      // lê. Sem esta linha o controle existiria e a lista não mudaria — a
+      // rotura silenciosa que o schema e a rota já documentam nas duas pontas.
+      sector_id: filterValue.sector_id,
       tag: filterValue.tag,
       tagMode: filterValue.tagMode,
       unread: filterValue.onlyUnread || undefined,
@@ -433,6 +490,7 @@ export function InboxLayout({
       filterValue.assigned_to,
       filterValue.search,
       filterValue.channel_session_id,
+      filterValue.sector_id,
       filterValue.tag,
       filterValue.tagMode,
       filterValue.onlyUnread,
@@ -507,6 +565,8 @@ export function InboxLayout({
   const needsFetch = !!selectedId && !inList;
   const single = useConversation(selectedId, needsFetch);
   const selectedConversation: ConversationWithContact | null = inList ?? single.data ?? null;
+  const participantes = useParticipantesDaConversa(selectedConversation?.id ?? "");
+  const participaDoAtendimento = participantes.data?.some((p) => p.user_id === user.id) === true;
   const selectionNotFound =
     needsFetch && !single.isPending && !single.data && isNotFound(single.error);
 
@@ -907,7 +967,11 @@ export function InboxLayout({
         )}
       >
         <BotaoIniciarConversa />
-        <InboxFilters value={filterValue} onChange={setFilterValue} />
+        <InboxFilters
+          value={filterValue}
+          onChange={setFilterValue}
+          filas={filasDaOrganizacao?.data ?? []}
+        />
         {podeAgirEmLote && (
           <BarraDeAcoesEmLote
             quantidade={selecao.quantidade}
@@ -992,7 +1056,10 @@ export function InboxLayout({
                 </SheetTrigger>
                 <SheetContent side="right" className="w-[min(22rem,90vw)] overflow-y-auto p-0">
                   <SheetTitle className="sr-only">{t("Ficha do contato")}</SheetTitle>
-                  <CRMSidePanel conversation={selectedConversation} />
+                  <CRMSidePanel
+                    conversation={selectedConversation}
+                    modulosIniciais={modulosDaLateral}
+                  />
                 </SheetContent>
               </Sheet>
             )}
@@ -1056,6 +1123,7 @@ export function InboxLayout({
                   nome: selectedConversation.assigned_to_user_name ?? null,
                 }}
                 contatoId={selectedConversation.contacts?.id ?? null}
+                contatoRecusaEnvio={Boolean(selectedConversation.contacts?.is_blocked || selectedConversation.contacts?.is_personal)}
               />
             </div>
             <RetentionNotice conversationId={selectedConversation.id} />
@@ -1083,6 +1151,9 @@ export function InboxLayout({
               key={rascunhoVivo ? `rascunho:${rascunhoVivo.conversationId}` : "composer"}
               ref={composerRef}
               conversationId={selectedConversation.id}
+              agendamentoLigado={
+                Boolean(selectedConversation.contacts?.id && selectedConversation.channel_session_id) && !supportReadonly
+              }
               blockedReason={supportReadonly ? "Acompanhamento somente leitura" : blockedReason}
               janelaFechada={motivoDaJanela}
               disabled={selectedConversation.status === "closed"}
@@ -1096,6 +1167,7 @@ export function InboxLayout({
                 ligada: activeOrg?.interface_settings?.bloquearAteAssumir === true,
                 donoDaConversa: selectedConversation.assigned_to_user_id,
                 atendenteId: user.id,
+                participanteAtivo: participaDoAtendimento,
               })}
               contactName={selectedConversation.contacts?.name ?? null}
               contactDisplayName={selectedConversation.contacts?.display_name}
@@ -1105,6 +1177,11 @@ export function InboxLayout({
               // A barra de recursos lembra o recolhimento POR usuário (#3282);
               // o id vem do `AuthProvider` daqui, não de dentro do compositor.
               usuarioId={user.id}
+              // #3732: a recusa do envio pode dizer que a conversa continua em
+              // outra conversa do MESMO contato, no número de quem responde —
+              // e o botão da faixa abre essa conversa. É a mesma seleção que a
+              // faixa do número fora do ar e o cabeçalho já usam.
+              onAbrirConversa={handleSelect}
               // O aviso é DA conversa da URL: trocar de conversa dentro da inbox
               // não pode deixar um texto sugerido no campo de outra pessoa.
               rascunho={rascunhoVivo}
@@ -1131,6 +1208,7 @@ export function InboxLayout({
           conversation={selectedConversation}
           recolhido={painelRecolhido}
           onAlternarRecolhido={alternarPainelDoContato}
+          modulosIniciais={modulosDaLateral}
         />
       </div>
 

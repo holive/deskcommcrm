@@ -14,6 +14,7 @@ vi.mock("@/lib/api/client", () => ({ apiClient: api }));
 vi.mock("@/hooks/i18n/useT", () => ({ useT: () => (text: string) => text }));
 
 import { ProspectingClient } from "./_client";
+import { ApiError } from "@/lib/api/types";
 
 const COMPLETA = "11111111-1111-4111-8111-111111111111";
 const PARCIAL = "11111111-1111-4111-8111-111111111112";
@@ -86,6 +87,10 @@ function candidato(id: string, campaignId: string, data: unknown, selected?: boo
     id,
     campaign_id: campaignId,
     data,
+    // A linha como o GET devolve: `status` e `attempted_at` são o que decide
+    // "ainda não abordada" (issue #4360).
+    status: "new",
+    attempted_at: null,
     progress: "new",
     message_status: null,
     error: null,
@@ -188,6 +193,35 @@ describe("A4: contador da verificação e o sem-site derivado", () => {
     const semSite = screen.getByRole("row", { name: /Sem site nenhum/ });
     expect(within(semSite).queryByText("A verificar")).toBeNull();
     expect(within(semSite).getByRole("button", { name: "Ver detalhes" })).toBeVisible();
+  });
+});
+
+describe("Completar fichas: o botão ao lado de Verificar agora", () => {
+  it("chama a ação da campanha e mostra quantas fichas foram completadas", async () => {
+    api.post.mockResolvedValueOnce({
+      data: { completadas: 2, ja_completas: 0, sem_links: 0, faltam: 0 },
+    });
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Completar fichas" }));
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/api/v1/prospecting", {
+        action: "completar_fichas",
+        id: COMPLETA,
+      }),
+    );
+    expect(await screen.findByText("Fichas completadas: 2.")).toBeVisible();
+    expect(screen.queryByText(/Clique de novo/)).toBeNull();
+  });
+
+  it("com fichas sobrando, pede para clicar de novo", async () => {
+    api.post.mockResolvedValueOnce({
+      data: { completadas: 100, ja_completas: 0, sem_links: 0, faltam: 5 },
+    });
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Completar fichas" }));
+    expect(
+      await screen.findByText("Fichas completadas: 100. Clique de novo para continuar."),
+    ).toBeVisible();
   });
 });
 
@@ -642,5 +676,164 @@ describe("H: recarrega sozinha enquanto há o que preparar, e para quando zera",
     await passar(100);
     await passar(60_000);
     expect(api.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("WhatsApp conferido antes da abordagem (lib/prospecting/whatsapp.ts)", () => {
+  function comWhatsapp() {
+    const f = fixture();
+    const com = { ...empresa("Tem zap", "https://z.test/", SITE_OK), whatsapp: { existe: true, verificado_em: "2026-11-02T12:00:00Z" } };
+    const sem = { ...empresa("Fixo sem zap", "https://f2.test/", SITE_OK), whatsapp: { existe: false, verificado_em: "2026-11-02T12:00:00Z" } };
+    f.candidates.push(candidato("c7", COMPLETA, com), candidato("c8", COMPLETA, sem, false));
+    return f;
+  }
+
+  it("o contador diz quantos foram conferidos e quantos ficaram fora por não ter WhatsApp", async () => {
+    api.get.mockImplementation(async () => ({ data: comWhatsapp() }));
+    openPage();
+    // 7 empresas com telefone na campanha (c1–c5, c7, c8); 2 conferidas, 1 sem WhatsApp.
+    expect(
+      await screen.findByText(/WhatsApp verificado: 2 de 7/),
+    ).toHaveTextContent("(1 sem WhatsApp, fora da abordagem)");
+    expect(within(screen.getByRole("row", { name: /Tem zap/ })).getByText("Tem WhatsApp")).toBeVisible();
+  });
+
+  it("sem nenhum veredito (módulo desligado ou sem conexão por QR), o contador do WhatsApp não aparece", async () => {
+    api.get.mockImplementation(async () => ({ data: fixture() }));
+    openPage();
+    await screen.findByText(/Sites verificados:/);
+    expect(screen.queryByText(/WhatsApp verificado:/)).toBeNull();
+  });
+
+  it("quem não tem WhatsApp aparece só nas desmarcadas, com o motivo, e sem caixa para marcar de volta", async () => {
+    api.get.mockImplementation(async () => ({ data: comWhatsapp() }));
+    openPage();
+    await screen.findByText(/WhatsApp verificado:/);
+    expect(screen.queryByRole("row", { name: /Fixo sem zap/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Mostrar desmarcadas/ }));
+    const linha = await screen.findByRole("row", { name: /Fixo sem zap/ });
+    expect(within(linha).getByText("Sem WhatsApp")).toBeVisible();
+    expect(within(linha).queryByRole("checkbox")).toBeNull();
+    // A desmarcada pelo operador (c5) continua marcável: a trava é só de quem não tem WhatsApp.
+    expect(within(screen.getByRole("row", { name: /Desmarcada/ })).getByRole("checkbox")).toBeVisible();
+  });
+});
+
+/**
+ * O AVISO DA RECUSA DO AGENTE LEVA AO AGENTE (issue #4118, saída 2).
+ *
+ * A recusa chegava como texto e mandava "publicar o agente com a ferramenta e
+ * acesso ao funil" — sem dizer qual das duas faltava e sem caminho. O servidor
+ * passou a devolver `details.agent_id`; a tela tem de transformar isso em link
+ * DIRETO do agente escolhido (não da lista), senão a pessoa volta a procurar.
+ */
+describe("o aviso do agente (issue #4118)", () => {
+  const RECUSA =
+    'O agente publicado não tem acesso ao funil "Clínicas" — marque o funil em "Em que negócios ele pode mexer". A campanha usa a versão publicada do agente: o ajuste só vale depois de publicar.';
+
+  it("traz o link do agente que o servidor apontou, e não o da lista", async () => {
+    api.post.mockRejectedValueOnce(
+      new ApiError(422, "prospecting_agent_incompleto", { agent_id: AGENT }, "req-4118", RECUSA),
+    );
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Iniciar abordagens com IA/ }));
+
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent(/versão publicada/);
+    expect(within(alerta).getByTestId("abrir-o-agente")).toHaveAttribute(
+      "href",
+      `/app/ai/agents/${AGENT}`,
+    );
+  });
+
+  it("sem `agent_id` no erro, não inventa link: a frase continua sozinha", async () => {
+    api.post.mockRejectedValueOnce(
+      new ApiError(422, "prospecting_agent_incompleto", undefined, "req-4118", RECUSA),
+    );
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Iniciar abordagens com IA/ }));
+
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent(/versão publicada/);
+    expect(within(alerta).queryByTestId("abrir-o-agente")).toBeNull();
+  });
+});
+
+/**
+ * A VOZ É DA ORGANIZAÇÃO, NÃO DA CAMPANHA (issue #4360, parte 2).
+ *
+ * O card existia e era salvo em `organizations.settings.prospeccao`, mas morava
+ * dentro do painel que o botão "Configurar busca" abre — então quem não clicava
+ * ali concluía que precisava reescrever a voz a cada prospecção. O card passa a
+ * ficar na tela; o painel da chave continua fechado até alguém pedir.
+ *
+ * O segundo caso é o que impede a "solução" errada: um segundo lugar para a
+ * mesma configuração (estado local, campo novo, endpoint novo) faria a voz
+ * digitada aqui divergir da que o envio usa.
+ */
+describe("voz e vocabulário à vista (issue #4360)", () => {
+  it("o card aparece sem clicar em 'Configurar busca'", async () => {
+    openPage();
+    expect(
+      await screen.findByRole("heading", { name: "Voz e vocabulário" }),
+    ).toBeVisible();
+    // A chave da busca continua atrás do botão: o card da voz saiu de lá, o
+    // painel inteiro não.
+    expect(screen.queryByLabelText("Chave da Apify")).toBeNull();
+  });
+
+  it("salva pelo MESMO PATCH por organização (sem endpoint novo)", async () => {
+    openPage();
+    fireEvent.change(await screen.findByLabelText("Seu nome"), {
+      target: { value: "Marcos" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar personalização" }));
+    await waitFor(() =>
+      expect(api.patch).toHaveBeenCalledWith(
+        "/api/v1/settings/prospeccao",
+        expect.objectContaining({ vendedor_nome: "Marcos" }),
+      ),
+    );
+    expect(await screen.findByText("Personalização salva.")).toBeVisible();
+  });
+});
+
+/**
+ * A LISTA DE VOLTA (issue #4360, parte 1).
+ *
+ * O link do arquivo carrega a contagem do que ele leva — e a contagem sai da
+ * MESMA régua do servidor (`naoAbordada`, `lib/prospecting/exportar.ts`), não
+ * de um `filter` escrito de novo aqui. Quem já foi abordado fica fora do
+ * arquivo: a campanha nova recusaria essa empresa ("Contato já existe no CRM")
+ * e o download prometeria uma reimportação que não acontece.
+ */
+describe("baixar a lista da campanha (issue #4360)", () => {
+  it("o link aponta para o CSV da campanha e diz quantas ainda não foram abordadas", async () => {
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Clínicas de estética/ }));
+    const link = await screen.findByTestId("baixar-lista");
+    expect(link).toHaveAttribute("href", `/api/v1/prospecting/${COMPLETA}/exportar`);
+    expect(link).toHaveTextContent("Baixar lista (5)");
+  });
+
+  it("só empresa abordada não gera link: não há lista para baixar", async () => {
+    const base = fixture();
+    api.get.mockImplementation(async () => ({
+      data: {
+        ...base,
+        candidates: [
+          {
+            ...candidato("c1", COMPLETA, empresa("Já abordada", "https://a.test/", null)),
+            status: "sent",
+            attempted_at: "2026-11-01T12:00:00.000Z",
+            progress: "replied",
+          },
+        ],
+      },
+    }));
+    openPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Clínicas de estética/ }));
+    expect(await screen.findByText(/nenhuma empresa ainda pode ser abordada/i)).toBeVisible();
+    expect(screen.queryByTestId("baixar-lista")).toBeNull();
   });
 });

@@ -38,6 +38,10 @@ export type InboxKind =
   | 'appointment_recovery_review'
   | 'qr_rescan'
   | 'routing_unassigned'
+  // (migration 9333, #3966) O número pediu para esperar a IA qualificar e o
+  // prazo venceu sem ela passar a conversa: a conversa entrou na distribuição,
+  // e quem cuida do agente precisa saber que ele não está passando adiante.
+  | 'routing_ia_wait_expired'
   | 'job_dead'
   | 'event_dead'
   | 'budget_exceeded'
@@ -60,6 +64,11 @@ export type InboxKind =
   // mesma coisa, e foi ele que pegou a primeira versão desta mudança — que
   // tinha o banco atualizado e o tipo não.
   | 'channel_template_review'
+  // (migration 9327, issue #3635) O MESMO evento, no canal OFICIAL DIRETO. Kind
+  // separado porque o rótulo e o destino do de cima apontam para a aba do
+  // parceiro: reaproveitá-lo mandaria quem conecta pela Cloud API para a tela
+  // errada. Nasce com `ref_kind='channel_session'`.
+  | 'channel_template_review_direct'
   | 'channel_number_alert'
   | 'midia_nao_lida'
   | 'promise_unfulfilled'
@@ -126,6 +135,18 @@ export type InboxKind =
   // dois dispara pela MESMA lista (`lib/tarefas/preferencia-de-lembrete.ts`).
   | 'task_due'
   | 'task_overdue'
+  // (migration 9033, Spec 32) Dois avisos da recuperação das conversas da queda.
+  // `recuperacao_da_queda` é o resumo da conexão (um aberto por conexão, atualizado
+  // numa queda nova). `cliente_sem_resposta_na_queda` é um por conversa cujo cliente
+  // escreveu enquanto o número estava fora e ninguém respondeu. Os dois têm índice
+  // único parcial de aberto, e é o banco que fecha a corrida.
+  | 'recuperacao_da_queda'
+  | 'cliente_sem_resposta_na_queda'
+  // (migration 9027, issue #3371) A conta da assinatura do ChatGPT desconectou
+  // e a renovação foi recusada: 107 turnos com 401 no cliente Obralivre, ~26 h
+  // sem resposta e a Central vazia. UM item por incidente (índice único
+  // parcial), fechado sozinho quando o login volta pela tela de Credenciais.
+  | 'assinatura_desconectada'
   | 'other';
 
 export interface InboxItemRow {

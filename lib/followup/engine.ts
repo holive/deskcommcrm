@@ -1,6 +1,8 @@
 import type { VariaveisDoModelo } from "@/lib/channels/meta/variaveis-do-fluxo";
 import type { JobClaim } from "@/lib/agent-engine/queue/claim";
 import { assertAgendaEffectSupabase } from "@/lib/agenda/efeito";
+import { AgendaPuladoError } from "@/lib/agenda/escolha-no-envio";
+import { escolhaDoFluxo } from "@/lib/agenda/escolha-no-envio-leitura";
 import { AgendaDeferredError } from "@/lib/agenda/protecao-followup";
 import type { ServiceBoundary } from "@/lib/atendimento/fronteira";
 import { isFollowupCasRecusado, StaleServiceBoundaryError } from "@/lib/atendimento/fronteira";
@@ -19,10 +21,12 @@ import { assertServiceBoundarySupabase } from "@/lib/atendimento/origem";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { idsDoContatoEGemeos } from "@/lib/channels/contato-por-telefone";
+import { portaDaAplicacao } from "@/lib/db";
 import { logger } from "@/lib/logger";
 
 import { flowGraphSchema, type FlowGraph, type FlowNode, type ReplySaveTo } from "./graph-schema";
 import { TETO_DE_PASSOS_DO_MOTOR } from "./custo-no-motor";
+import { enviosJaFeitos, redacoesDoPasso, redacoesNaOrdemDaVez } from "./variacoes-do-passo";
 import {
   ACTION_RECHECK_MS,
   BACKOFF_MS,
@@ -110,6 +114,13 @@ export interface FollowupJobRequest {
     fallback_template_id?: string;
     /** action (mode 'text') — corpo pronto; o turno envia sem chamar o modelo. */
     fixed_body?: string;
+    /**
+     * action (mode 'text') — #4429: as redações do MESMO passo, na ordem da vez
+     * (a preferida primeiro, que é o `fixed_body`). O turno escolhe entre elas
+     * com a janela de repetição na mão, na hora do envio. Ausente = uma redação
+     * só (o passo de hoje e todo job já enfileirado), e aí nada muda.
+     */
+    fixed_variacoes?: string[];
     /**
      * action (mode 'text') — #2734/#2972: mídia OPCIONAL (imagem, vídeo, áudio ou
      * documento) por URL. Presente,
@@ -422,6 +433,8 @@ function turnPayloadExtras(
   smartWaits: EsperaAdaptativa[],
   events: EnrollmentEventRef[] = [],
   contexto?: Record<string, unknown> | null,
+  /** #4429 — o contato, semente estável do ponto de partida da rotação. */
+  semente?: string,
 ): Partial<FollowupJobRequest["payload"]> {
   if (node.type === "action" && node.config.mode === "ai_message") {
     return {
@@ -430,8 +443,24 @@ function turnPayloadExtras(
     };
   }
   if (node.type === "action" && node.config.mode === "text") {
+    // #4429 — QUAL REDAÇÃO SAI, ESCOLHIDO AQUI. O texto do passo deixou de ser
+    // um só: `variacoes` guarda outras redações do MESMO passo e a rotação anda
+    // um passo por mensagem já enviada nesta inscrição (`enviosJaFeitos`), com
+    // ponto de partida no hash do contato. Passo com uma redação só — o de
+    // hoje, e todo grafo já publicado — cai em `redacoes[0]`, que é o `body`:
+    // nenhuma diferença byte a byte no que sai.
+    const redacoes = redacoesDoPasso(node.config);
+    // A LISTA inteira vai no job, na ordem da vez (a preferida primeiro). O
+    // turno escolhe com a JANELA na mão — ela só está fresca na hora do envio, e
+    // é lá que vive o gate que mede (#4429, segunda metade). A escolha daqui
+    // segue sendo a da rotação: `ordem[0]` é, byte a byte, o `fixed_body` de
+    // antes, e é ele que sai quando a janela não pressiona nenhuma redação.
+    const ordem = redacoesNaOrdemDaVez(redacoes, semente ?? "", enviosJaFeitos(events));
     return {
-      fixed_body: interpolarVolta(node.config.body, events, contexto),
+      fixed_body: interpolarVolta(ordem[0]!, events, contexto),
+      ...(ordem.length > 1
+        ? { fixed_variacoes: ordem.map((redacao) => interpolarVolta(redacao, events, contexto)) }
+        : {}),
       ...(node.config.media_url ? { fixed_media_url: node.config.media_url } : {}),
     };
   }
@@ -836,7 +865,7 @@ async function applyResult(
             node_id: node.id,
             source_step_key: idemKey,
             purpose: result.purpose,
-            ...turnPayloadExtras(node, smartWaits, events, contexto),
+            ...turnPayloadExtras(node, smartWaits, events, contexto, enrollment.contact_id),
             ...(result.fixed_body ? { fixed_body: result.fixed_body } : {}),
           },
         });
@@ -955,7 +984,19 @@ async function processEnrollment(
     await db.assertServiceBoundary?.(enrollment);
     if (enrollment.status !== "dormente") {
       guarda = "agenda";
-      await db.assertAgenda?.(enrollment);
+      try {
+        await db.assertAgenda?.(enrollment);
+      } catch (agendaErr) {
+        // #3813 — escolha do FLUXO em `nao_enviar`: a agenda não segura o PASSO.
+        // Quem pula é o ENVIO, que registra `skipped` com o motivo lá na frente
+        // (`followup-turn.ts`). Reagendar aqui (como o `adiar` faz) mandaria a
+        // mensagem depois do compromisso — o oposto do que a escolha pediu — e
+        // tratar como fronteira vencida cancelaria o acompanhamento inteiro.
+        // A guarda de MOEDA (`fn_appointment_enrollment_current`) não é escolha
+        // e continua valendo: só o pulo por compromisso chega como
+        // `AgendaPuladoError`.
+        if (!(agendaErr instanceof AgendaPuladoError)) throw agendaErr;
+      }
     }
   } catch (error) {
     if(error instanceof AgendaDeferredError){
@@ -1057,8 +1098,14 @@ async function processEnrollment(
   const temRegraDeData = graph.nodes.some(
     (n) => n.type === "condition" && n.config.checks.some((c) => c.field === "lead_date"),
   );
+  // A espera com horário (`ate_o_horario`) também pergunta pelo relógio da
+  // organização: "9h às 18h" sem fuso seria 9h às 18h em UTC — 6h às 15h em
+  // São Paulo, e o toque sairia cedo demais, que é o que o horário impede.
+  const temEsperaComHorario = graph.nodes.some(
+    (n) => n.type === "wait" && n.config.mode === "fixed" && n.config.ate_o_horario !== undefined,
+  );
   const fusoDaOrg =
-    temRegraDeData && db.loadFusoDaOrganizacao
+    (temRegraDeData || temEsperaComHorario) && db.loadFusoDaOrganizacao
       ? await db.loadFusoDaOrganizacao(enrollment.organization_id)
       : null;
 
@@ -1311,9 +1358,18 @@ export function createSupabaseAdminClient(admin: SupabaseClient): AdminClient {
       if (error) throw new Error(`pointer_query_failed: ${error.message}`);
       const gatilho = triggerConfigSchema.safeParse((data as { trigger_config?: unknown } | null)?.trigger_config);
       if (!gatilho.success || gatilho.data.kind !== "silence") return null;
-      return reavaliarDepoisDoRetorno(quando);
+      return reavaliarDepoisDoRetorno(quando, gatilho.data.params.threshold_minutes);
     },
-    async assertAgenda(enrollment){await assertAgendaEffectSupabase(admin,{organizationId:enrollment.organization_id,contactId:enrollment.contact_id,enrollmentId:enrollment.id,nodeId:enrollment.current_node_id});},
+    async assertAgenda(enrollment){
+      // #3813 — A ESCOLHA DO FLUXO VALE TAMBÉM NO TICK. Sem esta leitura o
+      // motor usava o padrão (`adiar`) e segurava TODO passo de quem tem
+      // horário marcado: um fluxo publicado em `enviar` nunca enviava, e um em
+      // `nao_enviar` só voltava a andar depois do compromisso (mandando, no
+      // fim, a mensagem que a escolha mandou não mandar). A guarda de moeda
+      // continua dentro de `assertAgendaEffectSupabase`.
+      const escolha = await escolhaDoFluxo(admin, enrollment.organization_id, enrollment.id);
+      await assertAgendaEffectSupabase(admin,{organizationId:enrollment.organization_id,contactId:enrollment.contact_id,enrollmentId:enrollment.id,nodeId:enrollment.current_node_id,escolhaNoEnvio:escolha});
+    },
     async claimDueEnrollments(limit, leaseSeconds) {
       const { data, error } = await admin.rpc("fn_claim_due_followup_enrollments", {
         p_limit: limit,
@@ -1509,7 +1565,7 @@ export function createSupabaseAdminClient(admin: SupabaseClient): AdminClient {
         .maybeSingle();
       if (leadErr) throw new Error(leadErr.message);
 
-      const resultado = await criarTarefaNoCrm(admin, {
+      const resultado = await criarTarefaNoCrm(portaDaAplicacao(), {
         organizationId: item.organization_id,
         titulo: item.config.titulo,
         venceEmDias: item.config.vence_em_dias,
@@ -1641,7 +1697,9 @@ export function createSupabaseAdminClient(admin: SupabaseClient): AdminClient {
         {
           admin,
           organizationId: item.organization_id,
-          ruleId: `followup:${item.enrollment_id}`,
+          // Follow-up não é regra de automação: não inventamos `ruleId` de regra
+          // (o anti-laço do motor descarta eventos com `caused_by_rule`).
+          ruleId: "",
           ruleName: "Fluxo de follow-up",
           event: {} as EventRow,
           context,

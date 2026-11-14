@@ -31,7 +31,20 @@ export type Actor =
    * porque nem todo caminho conhece o agente (token externo, por exemplo) — e
    * "não sei qual agente" tem de virar atividade de sistema, nunca linha perdida.
    */
-  | { type: "ai_agent"; id: string; role: string; api_token_id?: string; agent_id?: string }
+  | {
+      type: "ai_agent";
+      id: string;
+      role: string;
+      api_token_id?: string;
+      agent_id?: string;
+      /**
+       * `assisted` quando quem age é um agente em modo ASSISTIDO (doc 301 = B).
+       * Viaja para o `metadata` do evento como `actor_operation_mode`, e é por
+       * ele que o motor de automação segura as ações que falam com o cliente
+       * (`lib/automation/parada-no-assistido.ts`). Ausente = automático.
+       */
+      operation_mode?: "assisted";
+    }
   /**
    * TOKEN DE SERVIDOR sem escopo de agente — uma integração, não uma pessoa.
    *
@@ -68,8 +81,17 @@ export type Actor =
    *
    * Sem este campo, o carimbo se decide só pelo tipo do ator, e a mensagem que a
    * IA escreveu aparece no balão como "Automação" e some de `envios_por_ia`.
+   *
+   * `agent_id` (#3373) é a linha em `ai_agents` do agente que ESCREVEU o texto
+   * — o mesmo campo do ator `ai_agent` e pela mesma razão: o `id` deste ator é
+   * a REGRA que disparou, e a assinatura `por_agente` (#3310) precisa do nome
+   * de quem escreveu, não do nome de quem mandou disparar.
+   *
+   * `operation_mode` (doc 301 = B) é a marca HERDADA: a regra rodou por causa de
+   * algo que a IA fez no modo assistido, e o que ela escreve leva a mesma marca
+   * (`marcaHerdadaDoEvento` em `lib/automation/parada-no-assistido.ts`).
    */
-  | { type: "webhook_source"; id: string; textoEscritoPelaIA?: true };
+  | { type: "webhook_source"; id: string; textoEscritoPelaIA?: true; agent_id?: string; operation_mode?: "assisted" };
 
 export interface HandlerCtx {
   prospectingDelivery?: ProspectingDelivery;
@@ -83,6 +105,17 @@ export interface HandlerCtx {
   serviceBoundary?: ServiceBoundary | null;
   /** Origem de evento derivado; não é campo de input público. */
   serviceOrigin?: ServiceOrigin;
+  /**
+   * Texto ORIGINAL de uma mensagem que saiu como nota de voz (Fase 6a do
+   * plano de voz) — vira `messages.media_derived_text`, para a thread não
+   * ficar cega depois que o `body` virou áudio (busca, LGPD, classificador de
+   * follow-up leem esta coluna, não `body`, para mídia).
+   *
+   * Nunca vem do corpo de uma requisição pública, de propósito: um campo
+   * assim aberto deixaria qualquer chamador da API gravar texto que não bate
+   * com o áudio de verdade. Só `sendTurnMessage` o preenche.
+   */
+  aiVoiceDerivedText?: string | null;
   /** Chave HTTP validada na borda para replay de uma criação. */
   idempotencyKey?: string;
   /** Identidade estável do job interno; não usar claim, que muda em cada reclaim. */
