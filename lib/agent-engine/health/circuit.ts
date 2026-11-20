@@ -35,6 +35,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import type pg from 'pg';
 
+import { traduzir } from '@/lib/i18n/dicionario';
+import { preencher } from '@/lib/i18n/idioma-do-aviso';
+import { normalizarIdioma, type Idioma } from '@/lib/i18n/idiomas';
+
 import type { Logger } from '../obs/logger';
 import { enforceHolds } from '../edge/crm/session-watchdog';
 import { HEALTH_DEFAULTS, type HealthKnobs } from './defaults';
@@ -179,29 +183,50 @@ function pct(fraction: number): string {
   return `${(fraction * 100).toFixed(0)}%`;
 }
 
-/** Texto do diagnóstico do inbox_item (pt-br; SÓ taxas/contagens — PII jamais). */
-function diagnosisBody(reason: HoldReason, rates: SessionRates, k: HealthKnobs): string {
-  if (reason === 'go_live') {
-    return (
-      'Número novo aguardando liberação (go-live). Os disparos que o sistema começa — follow-up ' +
-      'e cadência de prospecção — nascem em espera por segurança: a fila retém, nada é perdido. ' +
-      'RESPONDER quem te escreveu continua funcionando normalmente. Resolva este item quando o ' +
-      'número estiver pronto para disparar.'
-    );
-  }
+/**
+ * O item que a trava de número novo abre na Central. É o ÚNICO sinal na tela de
+ * que os retornos automáticos do número pararam, e por isso nasce `warn`, não
+ * `info` (doc 109): no nível informação ele era o mais fácil de ignorar, e o
+ * texto antigo não dizia que nada saía. Traduzido pelo idioma da organização
+ * (título e corpo saem do banco como foram gravados, nunca por `t()` na tela).
+ */
+export const TITULO_DO_GO_LIVE = 'Número novo aguardando liberação (go-live)';
+// Uma linha só, sem `+`: a catraca do espanhol só resolve const de topo literal.
+export const CORPO_DO_GO_LIVE =
+  'Os retornos automáticos deste número estão parados até você liberar. Eles esperam na fila, nada é perdido, e voltam espaçados ao longo das horas seguintes. Responder quem te escreveu continua funcionando normalmente. Marque este item como resolvido quando o número estiver pronto para disparar.';
+
+export function textoDoGoLive(idioma: Idioma): { title: string; body: string } {
+  return { title: traduzir(TITULO_DO_GO_LIVE, idioma), body: traduzir(CORPO_DO_GO_LIVE, idioma) };
+}
+
+/**
+ * Texto do diagnóstico do inbox_item de saúde degradada, no idioma da
+ * organização (a Central mostra o texto como foi gravado; `pt-BR` é o de
+ * antes). SÓ taxas/contagens — PII jamais.
+ */
+function diagnosisBody(
+  reason: Exclude<HoldReason, 'go_live'>,
+  rates: SessionRates,
+  k: HealthKnobs,
+  idioma: Idioma = 'pt-BR',
+): string {
   if (reason === 'block_rate') {
     const rate = rates.totalSends > 0 ? rates.blockedSends / rates.totalSends : 0;
-    return (
-      `Bloqueios em ${pct(rate)} dos ${rates.totalSends} últimos envios do número ` +
-      `(limiar ${pct(k.blockRateThreshold)}). Outbound em espera automática — a fila retém, nada é perdido. ` +
-      'Verifique o número (possível queima do WhatsApp) e resolva este item para retomar.'
+    return preencher(
+      traduzir(
+        'Bloqueios em {taxa} dos {envios} últimos envios do número (limiar {limiar}). Outbound em espera automática — a fila retém, nada é perdido. Verifique o número (possível queima do WhatsApp) e resolva este item para retomar.',
+        idioma,
+      ),
+      { taxa: pct(rate), envios: rates.totalSends, limiar: pct(k.blockRateThreshold) },
     );
   }
   const rate = rates.sentLeads > 0 ? rates.respondedLeads / rates.sentLeads : 0;
-  return (
-    `Taxa de resposta em ${pct(rate)} (${rates.respondedLeads} de ${rates.sentLeads} leads contatados ` +
-    `responderam; piso ${pct(k.responseRateFloor)}). Outbound em espera automática — a fila retém. ` +
-    'Verifique a abordagem/o número e resolva este item para retomar.'
+  return preencher(
+    traduzir(
+      'Taxa de resposta em {taxa} ({responderam} de {contatados} leads contatados responderam; piso {piso}). Outbound em espera automática — a fila retém. Verifique a abordagem/o número e resolva este item para retomar.',
+      idioma,
+    ),
+    { taxa: pct(rate), responderam: rates.respondedLeads, contatados: rates.sentLeads, piso: pct(k.responseRateFloor) },
   );
 }
 
@@ -280,6 +305,14 @@ async function evaluateSession(
     const unhealthy = blockUnhealthy || responseUnhealthy;
     const degradeReason: HoldReason = blockUnhealthy ? 'block_rate' : 'response_rate';
 
+    const idiomaDaOrg = async (): Promise<Idioma> => {
+      const org = await client.query<{ locale: string | null }>(
+        'select locale from organizations where id = $1',
+        [tenantId],
+      );
+      return normalizarIdioma(org.rows[0]?.locale ?? null);
+    };
+
     const engageHold = async (reason: HoldReason): Promise<void> => {
       await client.query(
         `update channel_session_health
@@ -288,6 +321,14 @@ async function evaluateSession(
         [tenantId, channelSessionId, reason],
       );
       delta.held = 1;
+      const idioma = await idiomaDaOrg();
+      const item =
+        reason === 'go_live'
+          ? textoDoGoLive(idioma)
+          : {
+              title: traduzir('Saúde do número degradada — outbound em espera automática', idioma),
+              body: diagnosisBody(reason, rates, k, idioma),
+            };
       // inbox item 1× por episódio: só cria se não há item aberto do número (dedup).
       const ins = await client.query(
         `insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
@@ -298,11 +339,9 @@ async function evaluateSession(
          )`,
         [
           tenantId,
-          reason === 'go_live' ? 'info' : 'warn',
-          reason === 'go_live'
-            ? 'Número novo aguardando liberação (go-live)'
-            : 'Saúde do número degradada — outbound em espera automática',
-          diagnosisBody(reason, rates, k),
+          'warn',
+          item.title,
+          item.body,
           HEALTH_HOLD_REF_KIND,
           channelSessionId,
         ],
@@ -333,6 +372,17 @@ async function evaluateSession(
           [tenantId, channelSessionId],
         );
         delta.released = 1;
+      } else {
+        // Item aberto antes de o aviso subir para `warn`: reescrito UMA vez com o
+        // texto de hoje — quem atualiza com número ainda em aquecimento precisa
+        // ver que os retornos pararam. Depois disso o filtro `severity = 'info'`
+        // não casa mais nada.
+        const item = textoDoGoLive(await idiomaDaOrg());
+        await client.query(
+          `update agent_inbox_items set severity = 'warn', title = $3, body = $4
+           where organization_id = $1 and ref_kind = $5 and ref_id = $2 and status = 'open' and severity = 'info'`,
+          [tenantId, channelSessionId, item.title, item.body, HEALTH_HOLD_REF_KIND],
+        );
       }
     } else if (row.health_hold_active) {
       // Já liberado alguma vez → circuito de degradação. Retomada:
