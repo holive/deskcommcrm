@@ -18,7 +18,19 @@ import type { CapacidadeDaOrganizacao } from "@/lib/organizacao/capacidades";
  * Doutrina: docs/doctrine/sistema-vivo.md — "por qual porta se chega até mim?"
  */
 
-export type NavGroupId = "atendimento" | "crm" | "ia" | "canais" | "analise" | "organizacao";
+/**
+ * `modulos` é o único id que NÃO está em `NAV_GROUPS`: o grupo "Módulos" é GERADO em tempo de
+ * execução (um item por módulo conectado ativo da organização, Spec 33 F4), por
+ * `sidebarGroups`/`searchable` em `registry.ts`. Nenhuma entrada de `NAV_CATALOG` pode usá-lo.
+ */
+export type NavGroupId =
+  | "atendimento"
+  | "crm"
+  | "ia"
+  | "canais"
+  | "analise"
+  | "organizacao"
+  | "modulos";
 
 export interface NavGroup {
   id: NavGroupId;
@@ -941,6 +953,22 @@ export const NAV_CATALOG = [
     section: "Dinheiro",
     minRole: "viewer",
     modulo: "honorarios",
+  },
+  {
+    // ── O PAINEL DE VENDAS ─────────────────────────────────────
+    //
+    // "Quanto vendi" numa tela só: cartões de Vendas, Valor vendido, Ticket
+    // médio e Conversão, o gráfico do período e a lista das vendas por funil e
+    // tag. Fonte: os negócios GANHOS (`lib/relatorios/painel-de-vendas.ts`).
+    // SÓ NO HUB ("Ver tudo em Análise") e no ⌘K: o menu lateral está no teto
+    // medido de 15 itens (`tests/unit/interface-por-empresa.test.ts`).
+    href: "/app/vendas",
+    label: "Vendas",
+    description: "Quanto você vendeu, o ticket médio e a conversão, com o gráfico do período.",
+    icon: "ChartBar",
+    group: "analise",
+    section: "Os números do período",
+    minRole: "viewer",
   },
   {
     href: "/app/metrics",
