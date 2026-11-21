@@ -70,6 +70,7 @@ const MARCA_DA_CORRECAO = "Este turno terminou SEM nenhuma mensagem ao cliente";
 
 type Modules = {
   createInboundTurnHandler: typeof InboundTurn.createInboundTurnHandler;
+  JobSettledError: typeof InboundTurn.JobSettledError;
   queue: typeof Queue;
   createLogger: typeof ObsLogger.createLogger;
   createFakeRegistry: typeof Providers.createFakeRegistry;
@@ -219,6 +220,7 @@ async function avisosDaConversa(
 beforeAll(async () => {
   m = {
     createInboundTurnHandler: (await import("@/lib/agent-engine/agent/inbound-turn")).createInboundTurnHandler,
+    JobSettledError: (await import("@/lib/agent-engine/agent/inbound-turn")).JobSettledError,
     queue: await import("@/lib/agent-engine/queue/queue"),
     createLogger: (await import("@/lib/agent-engine/obs/logger")).createLogger,
     createFakeRegistry: (await import("@/lib/agent-engine/edge/llm/providers")).createFakeRegistry,
@@ -313,6 +315,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   enviados = [];
+  await pool.query("delete from cron_jobs where organization_id = $1", [ORG]);
   await pool.query("delete from send_ledger where organization_id = $1", [ORG]);
   await pool.query("delete from messages where organization_id = $1", [ORG]);
   await pool.query("delete from job_queue where organization_id = $1", [ORG]);
@@ -401,31 +404,38 @@ describe("o turno de resposta que terminou sem mensagem ao cliente", () => {
     ).toContain(MARCA_DA_CORRECAO);
   });
 
-  it("⭐ veto irrevogável (opt-out) + texto solto: NÃO pede correção nem chamada extra de modelo", async () => {
-    // O contraponto do caso acima: o cliente pediu para sair (is_blocked=true) e o
-    // gate `stop` vetou com "encerre o turno sem tentar de novo". Pedir a correção
-    // aqui mandaria o modelo chamar send_message de novo, contra o veto, e pagaria
-    // uma chamada de modelo (até PASSOS_DA_CORRECAO passos, com as ferramentas de
-    // escrita) por toda mensagem de opt-out.
+  it("⭐ veto irrevogável (opt-out): cancela antes do modelo e desativa os follow-ups", async () => {
+    // No fork, o STOP de um contato já bloqueado encerra o job ANTES do modelo.
+    // Não há turno mudo a corrigir: nem resposta, nem fechamento, nem retry.
     await pool.query(`update contacts set is_blocked = true where organization_id = $1 and id = $2`, [
       ORG,
       CONTACT,
     ]);
-    const { fake, prompts } = modelo([
-      enviar("Ok, você foi removido da nossa lista."),
-      texto("(o envio foi vetado; encerro)"),
-      // sem 3ª resposta roteirizada: a 3ª chamada é o fechamento (JSON padrão do
-      // dublê); se a correção fosse pedida, ela consumiria esse lugar.
-    ]);
-    await turno(fake);
+    const cronId = crypto.randomUUID();
+    await pool.query(
+      `insert into cron_jobs (id, organization_id, contact_id, kind, job_kind, payload, next_run_at, enabled)
+       values ($1, $2, $3, 'at', 'followup_turn', '{}', now() + interval '1 day', true)`,
+      [cronId, ORG, CONTACT],
+    );
+    const { fake, prompts } = modelo([]);
+    await expect(turno(fake)).rejects.toBeInstanceOf(m.JobSettledError);
 
     expect(enviados, "mensagem saiu para um contato que pediu para sair").toEqual([]);
-    expect(
-      prompts.some((p) => p.includes(MARCA_DA_CORRECAO)),
-      "veto irrevogável pediu a correção do turno mudo — o motor mandou tentar de novo o que o stop proíbe",
-    ).toBe(false);
-    // turno (2 chamadas: envio vetado + encerramento) + fechamento = 3, sem correção.
-    expect(prompts).toHaveLength(3);
+    expect(prompts, "contato bloqueado chegou ao modelo").toHaveLength(0);
+    const { rows: jobs } = await pool.query(
+      `select status, locked_by, locked_at, last_error from job_queue where organization_id = $1`,
+      [ORG],
+    );
+    expect(jobs).toEqual([
+      {
+        status: "failed",
+        locked_by: null,
+        locked_at: null,
+        last_error: expect.stringContaining("contato bloqueado"),
+      },
+    ]);
+    const { rows: crons } = await pool.query(`select enabled from cron_jobs where id = $1`, [cronId]);
+    expect(crons).toEqual([{ enabled: false }]);
   });
 
   it("⭐ silêncio deliberado NÃO abre caso humano (#2938)", async () => {
