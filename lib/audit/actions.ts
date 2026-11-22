@@ -62,6 +62,14 @@ export const AUDIT_ACTIONS = [
   "lead.moved",
   "lead.won",
   "lead.lost",
+  /**
+   * #4191 — o negócio foi classificado como NÃO comercial, ou voltou a ser
+   * comercial. Ação própria, e não `lead.updated`: a decisão muda a
+   * elegibilidade do negócio em Radar e métricas, e quem audita precisa poder
+   * filtrar por ela sem ler metadata.
+   */
+  "lead.non_commercial",
+  "lead.non_commercial_reverted",
   "lead.bulk_action",
   // A importação de planilha (extração do PR #418). O GESTO é auditado além dos
   // N `lead.created`: "quem despejou 300 negócios neste funil, e quando" é a
@@ -365,6 +373,9 @@ export const AUDIT_ACTIONS = [
   "channel.social_webhook_ressincronizado",
   "channel.ai_access_updated",
   "channel.acervo_updated",
+  // #4670: o interruptor "conversas novas criam negócio" do cartão da conexão.
+  // Por CONEXÃO — nunca da organização inteira.
+  "channel.negocio_da_conversa_updated",
   // A importação do histórico do número (#999): prévia, início, cancelamento e
   // retomada depois de erro (rotas), e o fim, concluída ou em erro (cron). A
   // rodada que só anda o cursor não audita.
