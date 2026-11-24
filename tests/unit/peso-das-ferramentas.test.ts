@@ -80,9 +80,10 @@ const TETO: Readonly<Record<string, { tokens: number; motivo: string }>> = {
       "#4077: a descrição passou a dizer que cada mensagem traz o AUTOR (sent_by_user_id e sent_by_user_name) — sem isso a integração não sabia que o campo existia e atribuía a fala ao 'sistema'",
   },
   "crm_get_queue_status": { tokens: 83, motivo: BASE },
+  "crm_count_conversations": { tokens: 117, motivo: "#4996 (item 2): ferramenta nova, só leitura, 1 filtro (status). Conta conversas por status sem paginar crm_list_conversations (que traz prévia de mensagem). Medido, não somado à mão" },
   "crm_list_leads": { tokens: 500, motivo: BASE },
   "crm_get_lead": { tokens: 202, motivo: BASE },
-  "crm_count_leads": { tokens: 317, motivo: "ferramenta nova: conta negócios sem listá-los, para o agente não paginar crm_list_leads só para responder 'quantos?'; 3 filtros (funil, etapa, status), sem responsável, de propósito, para pesar menos" },
+  "crm_count_leads": { tokens: 356, motivo: "#4996: ganhou por_etapa (+31 tokens) e a descrição passou a dizer que por_etapa traz só o stage_id, em vez de 'nunca ids' (+8, pedido do mantenedor no #5192): com ele o agente conta todas as etapas de um funil numa chamada, em vez de uma chamada por etapa (ou de paginar crm_list_leads). Base: 317 da ferramenta nova (3 filtros — funil, etapa, status —, sem responsável, de propósito, para pesar menos)" },
   "crm_list_lead_attachments": {
     tokens: 259,
     motivo:
@@ -269,7 +270,12 @@ const TETO: Readonly<Record<string, { tokens: number; motivo: string }>> = {
 // +1.612 com as cinco ferramentas de #4517 (627 + 243 + 244 + 256 + 242), MEDIDO
 // neste head em 2026-11-18 contra a main de então. MEDIDO de novo no merge com a
 // main de 2026-11-22 (`b6c92fba97`, que já tinha 45919): 47531 = 45919 + 1612.
-const TETO_TOTAL = 47531;
+// +31 do `por_etapa` em `crm_count_leads` (#4996). MEDIDO no rebase sobre a main de
+// 2026-11-23 (`da918574d`, que tinha 47531): 47562 = 47531 + 31, não somado à mão.
+// +117 de `crm_count_conversations` (#4996, item 2). MEDIDO neste head sobre a main de
+// 2026-11-24 (`ceaa51d67`, que tinha 47562): 47679 = 47562 + 117, não somado à mão.
+// +8 da descrição de `crm_count_leads` corrigida (por_etapa traz stage_id). MEDIDO: 47687 = 47679 + 8.
+const TETO_TOTAL = 47687;
 
 const VARIANTE = "schedule_followup (com negócio)";
 
