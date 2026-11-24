@@ -161,6 +161,16 @@ export const AUDIT_ACTIONS = [
   // automático numa conversa não tinha rota e, portanto, não tinha ação de
   // auditoria. Desligar uma automação é decisão auditável tanto quanto religá-la.
   "conversation.ai_paused",
+  // #4517 — os pares POR TOKEN dos três comandos de conversa. Ação própria, e
+  // não a mesma da pessoa, porque o FATO é diferente: a integração pausa sem
+  // assumir a conversa, retoma sem soltar o dono e fecha sem a tela. `actorUserId`
+  // vem nulo e `actorApiTokenId` diz QUAL token — a pergunta "quem desligou o
+  // automático deste cliente?" tem de ter resposta nominal, não "foi o sistema".
+  "conversation.ai_paused_by_token",
+  "conversation.ai_resumed_by_token",
+  "conversation.closed_by_token",
+  "conversation.reopened",
+  "conversation.reopened_by_token",
   // Ligar a IA numa conversa que tem dono, sem soltar o dono (#3967), é decisão
   // auditável nos dois sentidos: quem ligou, em que conversa, e quando desligou.
   // O par existe para que "por que a IA falou nessa conversa que é minha?"
@@ -589,6 +599,13 @@ export const AUDIT_ACTIONS = [
   // Só existe para o funil que nunca recebeu negócio: com histórico, a operação
   // vira `pipeline.archived` e a linha continua no banco.
   "pipeline.deleted",
+  // #4802 (item 3) — a escolha sobre os negócios de um funil que vai sair da
+  // lista. São ações próprias, e não um detalhe de `pipeline.archived`: o que se
+  // audita aqui é o destino de N negócios (quantos saíram, para qual funil, para
+  // qual etapa), e isso precisa ser encontrável sem abrir o metadata de um
+  // arquivamento.
+  "pipeline.negocios_transferidos",
+  "pipeline.negocios_removidos",
   "system.update_requested",
   "system.update_finished",
   // IA 360 · wave 2 — o retorno agendado deixou de ser exclusividade do motor e
@@ -1746,6 +1763,8 @@ export const AUDIT_ACTIONS = [
   // nunca a observação, que é texto livre.
   "venda.registrada",
   "venda.apagada",
+  // #5128 — a escolha de tipos de link do contato por organização.
+  "settings.links_de_contato_updated",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */
