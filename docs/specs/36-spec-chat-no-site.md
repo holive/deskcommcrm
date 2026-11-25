@@ -337,10 +337,16 @@ O que fica para a F2-B (formatos e ajustes de aparência):
 
 ### F3 — Horário
 
+Status: **F3 entregue** (Tarefas 1 a 3 da fatia; sem migration e sem variável de ambiente nova).
+
 - O chat usa o horário do agente que atende a conexão (`agent-config.ts`). Fora da janela, o turno é
   adiado como já acontece hoje, e a janela do chat mostra o aviso de fora do horário que o agente já
   tem configurado.
-- Sem agente na conexão, a janela mostra "Recebemos sua mensagem", e a conversa espera a equipe.
+- Sem agente na conexão, ou com todos os agentes dela pausados ou arquivados, a janela mostra "Recebemos sua mensagem. Nossa equipe responde por aqui." depois do primeiro envio aceito, uma vez por carga da janela. A conversa espera a equipe.
+- Com a janela fechada e sem aviso configurado no agente, o texto padrão diz a hora da volta, no horário do aparelho do visitante.
+- Se a leitura do horário falhar, o chat segue como aberto e o erro vai ao log. O chat não fica mudo por erro de leitura.
+- Ficou de fora, de propósito: o feriado nacional (`fechado_em_feriado_nacional` precisa do país da organização), o horário próprio do canal (o horário é o do agente) e o formulário de recado fora do horário (a mensagem do visitante já vira conversa e lead pelo pós-entrada).
+- Também fora desta fatia: o aviso automático que o motor manda pelo canal (`enviaAvisoForaDoHorario`). A chegada dele à janela do chat fica para a F4, medida junto do agente.
 
 ### F4 — Agente, passagem e teto do visitante anônimo
 
@@ -359,10 +365,16 @@ O que fica para a F2-B (formatos e ajustes de aparência):
 
 ### F5 — Origem e relatório
 
-- A primeira mensagem leva a página, o referrer e as UTMs, e passa por `estamparOrigemDaPagina`,
-  com a mesma guarda de primeiro toque do banco.
-- A Inbox filtra por canal e mostra o selo "Chat no site", e o relatório por canal ganha a linha do
-  canal novo.
+Status: **F5 entregue** (código das tarefas 1 e 2 da fatia; sem migration e sem variável de ambiente nova).
+
+- **Entrou:**
+  - A janela manda, na primeira mensagem, a página (`href`), a origem (`referrer`) e as UTMs, só os campos com valor. A janela corta cada valor em 200 caracteres antes de enviar, e a rota recusa campo que não conhece (422).
+  - A ingestão grava a página em `metadata.webchat_pagina` da primeira mensagem. Com UTM válida, estampa a origem no contato pela mesma função da landing com `wa.me` (`estamparOrigemDaPagina`), com a guarda de primeiro toque do banco. Se a estampa falhar, vira aviso no log e a mensagem entra do mesmo jeito.
+  - Da segunda mensagem em diante o contexto é ignorado.
+  - O selo "Chat no site" na Inbox e o relatório por canal (`fn_channel_metrics`, por conexão) já existiam: a conexão do chat aparece neles sem código novo.
+- **Não entrou:**
+  - Relatório por página de origem. O relatório agrupa por canal; por página fica para quando um pedido for medido.
+  - Não medido: o filtro de canal da Inbox pela conexão do chat, e o rótulo de origem do chat na ficha do contato pela tela.
 
 ## Fora desta spec (de propósito)
 
