@@ -222,6 +222,19 @@ const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
       "prova JWT A/B, negação viewer/cross-org e autoria real.",
   },
   {
+    fn: "fn_appointment_insert_with_responsibles(uuid,jsonb,uuid[])",
+    razao:
+      "app/api/v1/agenda/agendamentos/_handler.ts (executarCriacaoDeAgendamento, criação " +
+      "sem serviço COM responsáveis adicionais) chama pelo client da sessão (createClient " +
+      "do route.ts). É definer porque calendar_appointment_responsibles só tem SELECT para " +
+      "authenticated; só escreve depois das MESMAS guardas de fn_appointment_change_core " +
+      "(auth.uid() com papel agent via fn_role_at_least(p_org), suporte de escrita, MFA e " +
+      "agenda do colega), decide sozinha autor, origem e status de quem está logado e confere " +
+      "tipo, contato, conversa e convidados na organização. " +
+      "tests/invariants/agenda-responsaveis.test.ts prova JWT A/B, o isolamento cross-org e " +
+      "as recusas.",
+  },
+  {
     fn: "fn_agenda_settings(uuid,jsonb)",
     razao:
       "PATCH app/api/v1/agenda/configuracao/route.ts chama com createClient " +
@@ -338,6 +351,16 @@ const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
       "fn_role_at_least(p_org,'admin'), fn_support_write_allowed(p_org) e " +
       "fn_session_mfa_proven(); só atualiza a linha da organização pedida e recusa quem " +
       "ainda não tem configuração. Prova: tests/invariants/lembrete-ao-dono-escrita.test.ts.",
+  },
+  {
+    fn: "fn_definir_resumo_do_aviso_de_agendamento(uuid,boolean)",
+    razao:
+      "A porta de escrita de `config_aviso_de_agendamento.resumo_so_com_agendamento` " +
+      "(migration 9434, #4988). PUT app/api/v1/agenda/aviso/route.ts chama com createClient " +
+      "da sessão, depois de fn_definir_aviso_de_agendamento. Mesmas guardas da irmã do " +
+      "lembrete: auth.uid(), fn_role_at_least(p_org,'admin'), fn_support_write_allowed(p_org) " +
+      "e fn_session_mfa_proven(); só atualiza a linha da organização pedida e recusa quem " +
+      "ainda não tem configuração. Prova: tests/invariants/resumo-so-com-agendamento-escrita.test.ts.",
   },
   {
     fn: "fn_definir_aviso_de_agendamento(uuid,boolean,uuid,text,boolean,boolean,text)",

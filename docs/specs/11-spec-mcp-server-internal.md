@@ -189,6 +189,23 @@ inputSchema: z.object({
 })
 ```
 
+#### `crm_count_conversations`
+**Maps to**: `countConversationsHandler` (`app/api/v1/conversations/_handler.ts`) — sem rota REST própria.
+
+Conta conversas **sem listá-las**. Existe porque `crm_list_conversations` pagina de 50 em 50 e traz a prévia da última mensagem: quem precisa de "quantas conversas abertas?" acabava levando mensagens ao modelo só para contar. Devolve só números.
+
+```ts
+inputSchema: z.object({
+  status: z.enum(['open', 'pending', 'claimed', 'ai_handling', 'closed', 'archived']).optional()
+})
+outputSchema: z.object({
+  total: z.number().int(),
+  by_status: z.record(z.number()).optional() // só sem filtro de status: os seis status
+})
+```
+
+Mesma régua de visibilidade da listagem: `organization_id` na primeira cláusula (client service-role), conversa de contato pessoal e de canal desativado não contam e, em conversa de atendimento, conta apenas as conversas do contato do turno. Contagem feita no banco (`head: true`, `count: 'exact'`).
+
 #### `crm_get_conversation`
 **Maps to**: `GET /api/v1/conversations/:id`
 
@@ -284,9 +301,30 @@ não declara (`lib/mcp/conferencia-de-campos.ts`).
 ```ts
 inputSchema: z.object({
   conversation_id: z.string().uuid(),
-  body: z.string().min(1).max(4096),
-  media_url: z.string().url().optional()
+  body: z.string().min(1).max(4096).optional(),
+  type: z.enum(['text', 'image', 'audio', 'document', 'sticker', 'video', 'location', 'contact']).default('text'),
+  media_url: z.string().url().optional(),
+  media_storage_path: z.string().optional(),   // #5034
+  media_filename: z.string().optional(),       // #5034 (caminho e nome ficam fora da auditoria)
+  media_mime: z.string().optional(),
+  dispatch_mode: z.enum(['operational', 'institutional']).optional() // #5284: apenas token de integração com messages:institutional (bloqueado para ai_agent)
 })
+// Precisa de body, media_url ou media_storage_path.
+```
+
+**Arquivo sem link público (#5034)**: suba o arquivo com `POST /api/v1/conversations/{id}/media`
+(multipart, campo `file`; sessão do navegador ou token de integração com escrita — o token OAuth do MCP
+não serve para a rota REST). A resposta (`data`) traz `storage_path`, `kind`, `media_mime` e `media_filename` (o nome original). Envie com:
+
+```ts
+{ conversation_id, type: kind /* 'image' | 'video' | 'audio' | 'document' */,
+  media_storage_path: storage_path, media_mime, body /* legenda, opcional */,
+  ...(media_filename ? { media_filename } : {}) /* o nome da resposta do upload; null não é aceito, então fica de fora */ }
+```
+
+O envio confere que o arquivo é da organização E desta conversa; caminho de outra conversa é recusado.
+
+```ts
 
 outputSchema: z.object({
   message_id: z.string().uuid(),
@@ -395,7 +433,7 @@ A versão do agente armazena `tool_ids text[]` (Spec 10 §3.2). Validação no p
 ```ts
 const VALID_TOOL_IDS = [
   'crm_search_contacts', 'crm_get_contact',
-  'crm_list_conversations', 'crm_get_conversation', 'crm_get_conversation_history',
+  'crm_list_conversations', 'crm_count_conversations', 'crm_get_conversation', 'crm_get_conversation_history',
   'crm_list_leads', 'crm_count_leads', 'crm_get_lead', 'crm_list_pipelines',
   'crm_send_whatsapp_message', 'crm_create_lead', 'crm_update_lead', 'crm_move_lead_stage',
   'crm_request_human_handoff'

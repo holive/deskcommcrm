@@ -43,6 +43,16 @@ export const AUDIT_ACTIONS = [
   "auth.login_failed",
   /** Teto de tentativas barrou antes de chegar ao provedor (issue #64). */
   "auth.login_rate_limited",
+  /**
+   * Bloqueio progressivo por conta (issue #4743) — um evento por DEGRAU, porque
+   * "a conta está travada" não diz o que se deve fazer: 5 min é ruído de quem
+   * errou a senha, 30 min (10 falhas no dia) já é insistência. Um evento quando
+   * o degrau NASCE; a tentativa barrada segue em `auth.login_rate_limited`.
+   */
+  "auth.login_bloqueio_5min",
+  "auth.login_bloqueio_30min",
+  /** A senha foi redefinida pelo e-mail e o castigo caiu (issue #4743). */
+  "auth.login_bloqueio_removido",
   "auth.logout",
   "auth.mfa_enrolled",
   "auth.mfa_success",
@@ -62,6 +72,14 @@ export const AUDIT_ACTIONS = [
   "lead.moved",
   "lead.won",
   "lead.lost",
+  /**
+   * #4191 — o negócio foi classificado como NÃO comercial, ou voltou a ser
+   * comercial. Ação própria, e não `lead.updated`: a decisão muda a
+   * elegibilidade do negócio em Radar e métricas, e quem audita precisa poder
+   * filtrar por ela sem ler metadata.
+   */
+  "lead.non_commercial",
+  "lead.non_commercial_reverted",
   "lead.bulk_action",
   // A importação de planilha (extração do PR #418). O GESTO é auditado além dos
   // N `lead.created`: "quem despejou 300 negócios neste funil, e quando" é a
@@ -153,6 +171,16 @@ export const AUDIT_ACTIONS = [
   // automático numa conversa não tinha rota e, portanto, não tinha ação de
   // auditoria. Desligar uma automação é decisão auditável tanto quanto religá-la.
   "conversation.ai_paused",
+  // #4517 — os pares POR TOKEN dos três comandos de conversa. Ação própria, e
+  // não a mesma da pessoa, porque o FATO é diferente: a integração pausa sem
+  // assumir a conversa, retoma sem soltar o dono e fecha sem a tela. `actorUserId`
+  // vem nulo e `actorApiTokenId` diz QUAL token — a pergunta "quem desligou o
+  // automático deste cliente?" tem de ter resposta nominal, não "foi o sistema".
+  "conversation.ai_paused_by_token",
+  "conversation.ai_resumed_by_token",
+  "conversation.closed_by_token",
+  "conversation.reopened",
+  "conversation.reopened_by_token",
   // Ligar a IA numa conversa que tem dono, sem soltar o dono (#3967), é decisão
   // auditável nos dois sentidos: quem ligou, em que conversa, e quando desligou.
   // O par existe para que "por que a IA falou nessa conversa que é minha?"
@@ -365,6 +393,9 @@ export const AUDIT_ACTIONS = [
   "channel.social_webhook_ressincronizado",
   "channel.ai_access_updated",
   "channel.acervo_updated",
+  // #4670: o interruptor "conversas novas criam negócio" do cartão da conexão.
+  // Por CONEXÃO — nunca da organização inteira.
+  "channel.negocio_da_conversa_updated",
   // A importação do histórico do número (#999): prévia, início, cancelamento e
   // retomada depois de erro (rotas), e o fim, concluída ou em erro (cron). A
   // rodada que só anda o cursor não audita.
@@ -578,6 +609,13 @@ export const AUDIT_ACTIONS = [
   // Só existe para o funil que nunca recebeu negócio: com histórico, a operação
   // vira `pipeline.archived` e a linha continua no banco.
   "pipeline.deleted",
+  // #4802 (item 3) — a escolha sobre os negócios de um funil que vai sair da
+  // lista. São ações próprias, e não um detalhe de `pipeline.archived`: o que se
+  // audita aqui é o destino de N negócios (quantos saíram, para qual funil, para
+  // qual etapa), e isso precisa ser encontrável sem abrir o metadata de um
+  // arquivamento.
+  "pipeline.negocios_transferidos",
+  "pipeline.negocios_removidos",
   "system.update_requested",
   "system.update_finished",
   // IA 360 · wave 2 — o retorno agendado deixou de ser exclusividade do motor e
@@ -639,6 +677,7 @@ export const AUDIT_ACTIONS = [
   // handler o consumiria; evento sem consumer é o anti-pattern nº 3).
   "platform.internal_destinations_updated",
   "platform_google_oauth.updated",
+  "platform_microsoft_oauth.updated",
   "platform_smtp_settings.updated",
   // A credencial do APP da Meta da INSTALAÇÃO (migration 0257): o App Secret que
   // assina a entrega do webhook e o verify token que responde ao handshake.
@@ -788,6 +827,10 @@ export const AUDIT_ACTIONS = [
   "agenda.google.conexao_falhou",
   "agenda.google.conexao_concluida",
   "agenda.google.conexao_desconectada",
+  "agenda.microsoft.conexao_iniciada",
+  "agenda.microsoft.conexao_falhou",
+  "agenda.microsoft.conexao_concluida",
+  "agenda.microsoft.conexao_desconectada",
   // Tipos de agendamento: mudar duração, categoria ou responsável muda o que a
   // IA oferece ao cliente, então é mutação de configuração e audita.
   "agenda.tipo_criado",
@@ -879,6 +922,8 @@ export const AUDIT_ACTIONS = [
   // `nossos_ignorados` de propósito: é o número que prova o anti-eco
   // funcionando — sem ele, esses eventos teriam virado compromisso fantasma.
   "agenda.google.sync_executado",
+  "agenda.microsoft.sync_executado",
+  "agenda.microsoft.selecao_atualizada",
   "agenda.google_selection_updated",
   "agenda.google_catalog_updated",
   "agenda.meet_action_requested",
@@ -897,6 +942,8 @@ export const AUDIT_ACTIONS = [
   "agenda.endereco_salvo",
   "agenda.appointment_rescheduled",
   "agenda.appointment_cancelled",
+  // Lista de responsáveis adicionais da consulta mudou (só audita quando mudou de fato).
+  "agenda.appointment_responsibles_changed",
   // Relógio HTTP (Hobby / sem contêiner scheduler): uma batida que alguém
   // de fora chama. Só audita quando alguma tarefa mexeu em dado.
   "relogio.tick_run",
@@ -1034,6 +1081,22 @@ export const AUDIT_ACTIONS = [
   "extension.update_failed",
   "extension.reverted",
   "extension.removed",
+  // O interruptor, por instalação, do módulo `connected` (spec 33, D8): ligar ou desligar sem
+  // desinstalar. `metadata.disabled` diz o sentido. Uma linha só, da instância: não há vínculo por
+  // organização a desligar.
+  "extension.switched",
+  // O segredo do módulo `connected` foi gerado de novo (spec 33, F2, tarefa 4): o módulo atual deixa de
+  // funcionar até receber o novo e os tokens vivos da instalação foram revogados. `metadata` leva só a
+  // contagem de organizações; o segredo, em claro ou cifrado, NUNCA entra na linha.
+  "extension.secret_rotated",
+  // A organização mudou as áreas do CRM que um módulo `connected` pode alcançar (spec 33, F3, tarefa 5).
+  // `metadata` leva a lista fechada de permissões `area.*` consentidas depois da mudança e a revisão do
+  // vínculo; nenhum dado pessoal, segredo ou token.
+  "extension.consent_changed",
+  // O módulo `connected` buscou um token curto (spec 33, F2, tarefa 5). Uma linha por busca bem-sucedida,
+  // na organização do par. `metadata` leva só o id da instalação e o slug do módulo; o texto do token e o
+  // hash NUNCA entram na linha.
+  "extension.token_issued",
   // Nome próprio, e não `extension.deactivated`: na auditoria da organização, "nós desligamos" e
   // "o responsável pela instalação removeu" precisam ser distinguíveis sem abrir os metadados.
   "extension.deactivated_by_removal",
@@ -1264,6 +1327,7 @@ export const AUDIT_ACTIONS = [
   // "Enviar vendas pelo canal da conversa" (doc 76, PR #1819): ligar faz o
   // valor da venda e o telefone do cliente saírem para o provedor do canal.
   "conversions.report_via_channel_updated",
+  "calls.block_incoming_updated",
   // "Deduzir a origem do site pelo horário do clique" (doc 259, PR #3906):
   // ligar faz a Origem passar a aceitar palpite, além de prova.
   "conversions.site_origin_by_click_time_updated",
@@ -1541,6 +1605,11 @@ export const AUDIT_ACTIONS = [
   // mesma razão do `ai.case_alert_settings_changed`: `api_audit_log` é
   // append-only e a cascata de LGPD não o alcança.
   "ai.case_alert_settings_removed",
+  // "Não enviar aviso de caso" por membro (#4989): quem ligou/desligou a marca
+  // que faz o aviso de caso PARAR numa pessoa. Código próprio pela mesma razão
+  // do `_removed`: a pergunta depois é outra ("quem calou os avisos desta
+  // fila?"), e o painel filtra por `action`. Só CONTAGENS, nunca ids.
+  "ai.case_alert_nao_avisar_changed",
   "lgpd.atestado_emitido",
   // A cadência do lembrete de caso parado (migration 0766): ligado, intervalo e
   // teto, escolhidos na Central por quem administra. Audita porque desligar
@@ -1708,6 +1777,20 @@ export const AUDIT_ACTIONS = [
   // A pessoa gravou as próprias abas da Inbox (#3313): a ordem da faixa e quais
   // ficam no menu "Mais". Metadata com a ordem, as visíveis e as ocultas.
   "user.inbox_tabs_updated",
+  // Venda registrada à mão num negócio (Vendas registradas): conta no painel de
+  // vendas pela DATA dela, em qualquer etapa. Metadata com lead, valor e data —
+  // nunca a observação, que é texto livre.
+  "venda.registrada",
+  "venda.apagada",
+  // #5128 — a escolha de tipos de link do contato por organização.
+  "settings.links_de_contato_updated",
+  // Chat no site (Spec 36, F1): a conexão de chat criada, editada e com a chave pública
+  // girada. Metadata leva só o canal e, na edição, os NOMES dos campos alterados.
+  "channel.webchat_created",
+  "channel.webchat_updated",
+  "channel.webchat_key_rotated",
+  // Pausa do chat: emitida só quando o valor MUDA. Metadata leva o canal e o novo valor.
+  "channel.webchat_paused",
 ] as const;
 
 /** Um código de auditoria. Derivado de `AUDIT_ACTIONS` — não redigite a lista. */

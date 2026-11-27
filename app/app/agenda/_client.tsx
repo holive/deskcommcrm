@@ -15,6 +15,7 @@ import * as React from "react";
 import { AvisoDaConexaoGoogle } from "./_components/AvisoDaConexaoGoogle";
 import { CamadaDatasDosNegocios } from "./_components/CamadaDatasDosNegocios";
 import { CartaoDaConexaoGoogle } from "./_components/CartaoDaConexaoGoogle";
+import { CartaoDaConexaoOutlook } from "./_components/CartaoDaConexaoOutlook";
 
 import { AgendaInterativa } from "@/components/agenda/AgendaInterativa";
 import { PainelDoDia } from "@/components/agenda/PainelDoDia";
@@ -99,6 +100,7 @@ export function AgendaClient({
   hojeNaOrganizacao,
   usuarioId,
   googleConfigurado,
+  outlook,
   contaConectada,
   enderecoDeRetorno,
   faltaNoGoogle,
@@ -125,6 +127,7 @@ export function AgendaClient({
   /** Id de quem está logado — a única fonte para o rótulo "Você". */
   usuarioId: string;
   googleConfigurado: boolean;
+  outlook?: { configurado: boolean; conta: string | null; precisaReconectar: boolean };
   contaConectada?: string | null;
   enderecoDeRetorno?: string;
   faltaNoGoogle: string[];
@@ -637,9 +640,32 @@ export function AgendaClient({
   // histórico, que lê `agendamentos` (cheio) e o separa sozinha em `separar()`.
   // Mesma fonte, dois recortes: a grade responde "o que está de pé", o
   // histórico responde "o que aconteceu", cancelado incluso.
+  //
+  // A grade também precisa saber de quem a duração é a do SERVIÇO (#4450): a
+  // borda de baixo do card não aparece ali, porque a rota recusa
+  // `duration_minutes` com `agenda_duracao_do_servico`. A lista de tipos desta
+  // tela já diz quais são serviço; a vaga de ocorrência vem marcada da rota.
+  const tiposDeServico = React.useMemo(
+    () => new Set(tiposIniciais.filter((t) => t.servico).map((t) => t.id)),
+    [tiposIniciais],
+  );
+  // O que ocupa, SEM o filtro de profissional: com o Bruno isolado, a borda de
+  // um card em que ele é convidado confere a agenda da RESPONSÁVEL (#4450).
+  const ocupacaoDaGrade = React.useMemo(
+    () =>
+      (agendamentosVivos ?? (naJanelaDoServidor ? agendamentosIniciais : [])).filter(
+        (a) => a.situacao !== "cancelled",
+      ),
+    [agendamentosVivos, naJanelaDoServidor, agendamentosIniciais],
+  );
   const agendamentosDaGrade = React.useMemo(
-    () => agendamentos.filter((a) => a.situacao !== "cancelled"),
-    [agendamentos],
+    () =>
+      agendamentos
+        .filter((a) => a.situacao !== "cancelled")
+        .map((a) =>
+          a.tipoId && tiposDeServico.has(a.tipoId) && !a.duracaoFixa ? { ...a, duracaoFixa: true } : a,
+        ),
+    [agendamentos, tiposDeServico],
   );
 
   // As faixas FECHADAS em "Dias fora da rotina" — e pela MESMA pessoa isolada que
@@ -706,6 +732,11 @@ export function AgendaClient({
         contaConectada={contaConectada}
         enderecoDeRetorno={enderecoDeRetorno}
       />
+      {outlook && (
+        <React.Suspense fallback={null}>
+          <CartaoDaConexaoOutlook {...outlook} />
+        </React.Suspense>
+      )}
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
         <div className="min-w-0">
@@ -1109,7 +1140,7 @@ export function AgendaClient({
                   // contorno que o modo de alto contraste do sistema usa.
                   "mt-1 w-full rounded-md border bg-surface p-2 outline-hidden",
                   emailConvidadoInvalido
-                    ? "border-danger focus:border-danger"
+                    ? "border-destructive focus:border-destructive"
                     : "border-border focus:border-border-strong",
                 )}
                 placeholder={t("cliente@empresa.com")}
@@ -1627,6 +1658,7 @@ export function AgendaClient({
         agora={new Date()}
         pessoas={pessoas}
         agendamentos={agendamentosDaGrade}
+        ocupacao={ocupacaoDaGrade}
         fechamentos={fechamentosDaGrade}
         recorte={recorteDaGrade}
         tipos={tiposIniciais.map((t) => ({ id: t.id, nome: t.nome, duracaoMin: t.duracaoMin }))}

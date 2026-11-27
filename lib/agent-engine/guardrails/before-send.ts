@@ -174,6 +174,16 @@ export interface GateContext {
      * só distingue resposta de retomada por follow-up.
      */
     resposta?: boolean;
+    /**
+     * Este envio é a 1ª mensagem a uma pessoa nova (abordagem)? Só o canal com
+     * `tetoSoAbordagem` ligado lê o campo (#3851): ligado, o teto conta e barra
+     * a abordagem e deixa passar o follow-up de quem já foi abordado.
+     *
+     * Omitido = `true` (conservador) no motor. O runner declara só com a opção
+     * ligada (consulta o `send_ledger` DESTE número) ou na resposta (`false`);
+     * a ausência do dado nunca vira "pessoa já abordada" e abre o teto.
+     */
+    abordagem?: boolean;
   };
   spinning: {
     knobs: SpinningKnobs;
@@ -243,6 +253,19 @@ export interface GateContext {
   casesEnabled: boolean;
   hasOpenCase: boolean;
   openedCaseThisTurn: boolean;
+  /**
+   * #5191 — a ferramenta `request_human_handoff` está NO TURNO (o modelo pode
+   * chamá-la). O `casePromiseGate` continua VETANDO a promessa explícita de
+   * humano sem caso, mas com a ferramenta na mão a razão do veto aponta a
+   * PASSAGEM (`RAZAO_DE_PASSAGEM_SEM_CASO`) em vez de `open_human_case` — que
+   * empurrava o modelo para o caso DUPLICADO do mesmo atendimento. Quem avisa
+   * o lead depois da passagem é o sistema. Ausente/false = razão anterior.
+   *
+   * Não é "casos ligados": é a presença da ferramenta no turno. Quem a remove é
+   * `ai_agent_versions.handoff_tool_enabled`; sem ela, a promessa de humano
+   * continua exigindo caso aberto, porque não existe passagem para onde ir.
+   */
+  handoffDisponivel?: boolean;
   /**
    * Nome(s) próprio(s) que o PROMPT do tenant usa para a retaguarda humana (ex.:
    * "Fulano"), somados ao vocabulário genérico do `casePromiseGate`
@@ -599,6 +622,17 @@ export const semanticPromiseGate: Gate = {
 };
 
 /**
+ * #5191 — a razão do veto quando a passagem foi PROMETIDA e a ferramenta não foi
+ * usada. Exportada porque o fail-safe do turno (`inbound-turn.ts`) devolve esta
+ * MESMA frase ao modelo quando decide NÃO abrir caso: gate e fail-safe não podem
+ * discordar sobre qual é o destino certo (é o mesmo erro que o #3816 mediu).
+ */
+export const RAZAO_DE_PASSAGEM_SEM_CASO =
+  'Você prometeu passar a conversa para uma pessoa, mas não chamou a tool ' +
+  'request_human_handoff. Chame a tool request_human_handoff (o sistema avisa o ' +
+  'cliente no seu lugar) OU reformule a mensagem sem prometer humano.';
+
+/**
  * Gate anti-alucinação de casos humanos (spec 15 §10.2, Wave 4) — a garantia DURA da
  * invariante "o lead nunca recebe promessa-de-humano sem caso aberto". Off (`casesEnabled`
  * false) ou já há caso (`hasOpenCase`/`openedCaseThisTurn` — a IA abriu um NESTE turno) =
@@ -720,7 +754,15 @@ export const casePromiseGate: Gate = {
       pass: false,
       code: 'case_promise_without_case',
       reason:
-        (promessaDoAssistente || soRetornoDeHumano) && ctx.followup?.disponivel === true
+        // #5191 — com a ferramenta de passagem NO TURNO, a promessa explícita de
+        // humano tem destino real: a razão manda chamar `request_human_handoff`
+        // em vez de abrir um caso ao lado da passagem. O texto continua VETADO
+        // até a chamada — o gate não consegue provar uma chamada futura, e a
+        // promessa sem ação é o handoff fantasma. É a MESMA frase que o fail-safe
+        // devolve ao decidir não abrir caso (gate e fail-safe concordam — #3816).
+        handoffExplicito && ctx.handoffDisponivel === true
+          ? RAZAO_DE_PASSAGEM_SEM_CASO
+          : (promessaDoAssistente || soRetornoDeHumano) && ctx.followup?.disponivel === true
           ? 'Você prometeu voltar a falar com o cliente, mas não deixou o retorno marcado. ' +
             'Chame a tool schedule_followup (agendando o retorno) OU open_human_case ' +
             '(descrevendo o que precisa) OU reformule a mensagem sem prometer retorno.'
@@ -1211,6 +1253,7 @@ export const pacingGate: Gate = {
       crmDailyLimit: ctx.pacing.crmDailyLimit,
       banRisk,
       resposta: ctx.pacing.resposta,
+      ...(ctx.pacing.abordagem !== undefined ? { abordagem: ctx.pacing.abordagem } : {}),
       rng: ctx.pacing.rng,
     });
     if (!decision.allow) {
@@ -1540,6 +1583,8 @@ export interface RunBeforeSendArgs {
   casesEnabled?: boolean;
   hasOpenCase?: boolean;
   openedCaseThisTurn?: boolean;
+  /** Ver `GateContext.handoffDisponivel` (#5191). Ausente = passagem fora do turno. */
+  handoffDisponivel?: boolean;
   /** Ver `GateContext.humanPromiseExtraTargets`. Ausente = só cargos genéricos. */
   humanPromiseExtraTargets?: readonly string[];
   /**
@@ -1886,10 +1931,24 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
     const disclosure = await loadDisclosureTemplate(client, args.tenantId);
     // "1º outbound" (send_ledger accepted == 0): sinal compartilhado pelo disclosure (F4-05) e
     // pelo gate LGPD (F4-09). Só consulta o ledger se ALGUM dos dois precisa (senão no-op).
+    // A conta é da ORGANIZAÇÃO, como sempre foi: a base legal da LGPD é da empresa
+    // (controladora), e a opção do teto (#3851) não muda quem se apresenta.
     const isFirstOutbound =
       disclosure !== null || args.lgpd !== undefined
         ? (await countPriorAcceptedSends(client, args.tenantId, args.leadId)) === 0
         : false;
+    // ABORDAGEM (#3851/#4063): só o canal com `tetoSoAbordagem` ligado lê o campo, e só
+    // ele paga a consulta. Ali "já recebeu" é DESTE número (`channelSessionId`): a pessoa
+    // abordada pelo número A é abordagem nova para o B, senão um número novo herdaria a
+    // base do outro como follow-up. Resposta nunca é abordagem (a pessoa veio até nós).
+    // Desligado, fica INDEFINIDO: o motor não lê, e a linha do ledger nasce `true`.
+    const tetoSoAbordagem = pacingCfg.knobs.tetoSoAbordagem === true;
+    const abordagem: boolean | undefined =
+      args.resposta === true
+        ? false
+        : tetoSoAbordagem
+          ? (await countPriorAcceptedSends(client, args.tenantId, args.leadId, args.channelSessionId)) === 0
+          : undefined;
 
     const lastInboundAt = await readLastInboundAt(
       client,
@@ -1913,6 +1972,7 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
         crmDailyLimit: args.crmDailyLimit,
         rng: args.rng,
         ...(args.resposta !== undefined ? { resposta: args.resposta } : {}),
+        ...(abordagem !== undefined ? { abordagem } : {}),
       },
       spinning: { knobs: spinningKnobs, window },
       ...(respostasDaConversa !== undefined ? { tetoDeRespostas: respostasDaConversa } : {}),
@@ -1933,6 +1993,7 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
       casesEnabled: args.casesEnabled ?? false,
       hasOpenCase: args.hasOpenCase ?? false,
       openedCaseThisTurn: args.openedCaseThisTurn ?? false,
+      handoffDisponivel: args.handoffDisponivel ?? false,
       ...(args.humanPromiseExtraTargets !== undefined
         ? { humanPromiseExtraTargets: args.humanPromiseExtraTargets }
         : {}),
@@ -2037,6 +2098,7 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
     if (outcome.kind === 'sent') {
       await recordSend(client, args.tenantId, args.channelSessionId, args.now, {
         resposta: tipoDeEnvio(args.resposta) === 'resposta',
+        ...(abordagem !== undefined ? { abordagem } : {}),
       });
       // Simetria com o gate desarmado: quem não é julgado pela janela não entra
       // nela. Ver `GateContext.spinningEnforced`.
